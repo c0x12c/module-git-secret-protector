@@ -1,0 +1,1 @@
+# spartan-git-secret-protector
