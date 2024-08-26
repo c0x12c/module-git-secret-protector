@@ -1,0 +1,1 @@
+secrets/*.txt filter=sample-app diff=sample-app
