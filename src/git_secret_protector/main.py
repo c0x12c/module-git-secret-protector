@@ -2,25 +2,13 @@ import argparse
 import logging
 
 from git_secret_protector.encryption_manager import EncryptionManager
+from git_secret_protector.git_attributes_parser import GitAttributesParser
 from git_secret_protector.git_hooks_installer import GitHooksInstaller
 from git_secret_protector.key_rotator import KeyRotator
 from git_secret_protector.kms_key_manager import KMSKeyManager
 from git_secret_protector.logging import configure_logging
-from git_secret_protector.settings import get_settings
 
 logger = logging.getLogger(__name__)
-
-
-def setup_logging():
-    settings = get_settings()
-    log_file = settings.log_file
-    logging.basicConfig(
-        filename=log_file,
-        filemode='a',
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    logger.info("Logging initialized. Logs will be written to: %s", log_file)
 
 
 def setup_aes_key(args):
@@ -31,7 +19,7 @@ def setup_aes_key(args):
 
 def pull_kms_key(args):
     kms_manager = KMSKeyManager()
-    kms_manager.get_aes_key(args.filter_name, force_refresh=True)
+    kms_manager.pull_aes_key(args.filter_name)
     logger.info("KMS key pulled and cached for filter: %s", args.filter_name)
 
 
@@ -48,15 +36,53 @@ def install(args):
 
 
 def encrypt_files(args):
-    encryption_manager = EncryptionManager.from_filter_name(args.filter_name)
-    encryption_manager.encrypt(args.filter_name)
-    logger.info("Files encrypted for filter: %s", args.filter_name)
+    git_attributes_parser = GitAttributesParser()
+    filter_names = git_attributes_parser.get_filter_names()
+
+    for filter_name in filter_names:
+        encryption_manager = EncryptionManager.from_filter_name(filter_name)
+        encryption_manager.encrypt(filter_name)
+        logger.info("Files encrypted for filter: %s", filter_name)
 
 
 def decrypt_files(args):
-    encryption_manager = EncryptionManager.from_filter_name(args.filter_name)
-    encryption_manager.decrypt(args.filter_name)
-    logger.info("Files decrypted for filter: %s", args.filter_name)
+    git_attributes_parser = GitAttributesParser()
+    filter_names = git_attributes_parser.get_filter_names()
+
+    for filter_name in filter_names:
+        encryption_manager = EncryptionManager.from_filter_name(filter_name)
+        encryption_manager.decrypt(filter_name)
+        logger.info("Files decrypted for filter: %s", filter_name)
+
+
+def encrypt_file(args):
+    logger.info("Executing encrypt_file command: %s", args)
+    git_attributes_parser = GitAttributesParser()
+    filter_name = git_attributes_parser.get_filter_name_for_file(args.file_name)
+    logger.info("Found filter_name to encrypt: %s", filter_name)
+
+    if filter_name is None:
+        logger.error("No filter found for file: %s", args.file_name)
+        return
+
+    encryption_manager = EncryptionManager.from_filter_name(filter_name)
+    encrypted_data = encryption_manager.encrypt_file(args.file_name)
+    print(encrypted_data.decode('utf-8'))
+
+
+def decrypt_file(args):
+    logger.info("Executing decrypt_file command: %s", args)
+    git_attributes_parser = GitAttributesParser()
+    filter_name = git_attributes_parser.get_filter_name_for_file(args.file_name)
+    logger.info("Found filter_name to decrypt: %s", filter_name)
+
+    if filter_name is None:
+        logger.error("No filter found for file: %s", args.file_name)
+        return
+
+    encryption_manager = EncryptionManager.from_filter_name(filter_name)
+    decrypted_data = encryption_manager.decrypt_file(args.file_name)
+    print(decrypted_data.decode('utf-8'))
 
 
 def main():
@@ -95,7 +121,18 @@ def main():
     parser_decrypt_files.add_argument('filter_name', type=str, help="The filter name for the AES key")
     parser_decrypt_files.set_defaults(func=decrypt_files)
 
+    # Command to encrypt a specific file
+    parser_encrypt_file = subparsers.add_parser('encrypt-file', help="Encrypt a specific file")
+    parser_encrypt_file.add_argument('file_name', type=str, help="The file to encrypt")
+    parser_encrypt_file.set_defaults(func=encrypt_file)
+
+    # Command to decrypt a specific file
+    parser_decrypt_file = subparsers.add_parser('decrypt-file', help="Decrypt a specific file")
+    parser_decrypt_file.add_argument('file_name', type=str, help="The file to decrypt")
+    parser_decrypt_file.set_defaults(func=decrypt_file)
+
     args = parser.parse_args()
+
     if hasattr(args, 'func'):
         args.func(args)
     else:

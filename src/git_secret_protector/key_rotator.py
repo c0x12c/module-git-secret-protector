@@ -20,7 +20,7 @@ class KeyRotator:
             self.kms_key_manager.setup_aes_key(filter_name=filter_name)
 
             # Step 2: Retrieve the new AES key
-            new_aes_key = self.kms_key_manager.get_aes_key(filter_name=filter_name, force_refresh=True)
+            new_aes_key = self.kms_key_manager.pull_aes_key(filter_name=filter_name)
 
             # Step 3: Encrypt all files associated with this filter with the new AES key
             encryption_manager = EncryptionManager(aes_key=new_aes_key)

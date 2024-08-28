@@ -1,3 +1,4 @@
+import fnmatch
 import glob
 import os
 import re
@@ -45,3 +46,11 @@ class GitAttributesParser:
     def get_filter_names(self):
         """Return a list of unique filter names from the .gitattributes file."""
         return list(self.patterns.keys())
+
+    def get_filter_name_for_file(self, file_name, repo_root='.'):
+        """Return the filter name that matches the given file name based on .gitattributes patterns."""
+        for filter_name, patterns in self.patterns.items():
+            for pattern in patterns:
+                if fnmatch.fnmatch(os.path.relpath(file_name, repo_root), pattern):
+                    return filter_name
+        return None

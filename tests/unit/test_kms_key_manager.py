@@ -42,18 +42,11 @@ class TestKMSKeyManager(unittest.TestCase):
         mock_store_key_id.assert_called_once_with('mock-filter', 'mock-key-id')
 
     @patch('git_secret_protector.kms_key_manager.KMSKeyManager.load_cached_key', return_value=None)
-    @patch('git_secret_protector.kms_key_manager.KMSKeyManager.cache_aes_key')
-    @patch('git_secret_protector.kms_key_manager.KMSKeyManager.get_key_id')
-    def test_get_aes_key_no_cache(self, mock_get_key_id, mock_cache_aes_key, mock_load_cached_key):
-        mock_get_key_id.return_value = 'mock-key-id'
-        self.mock_kms_client.generate_data_key.return_value = {'Plaintext': b'new-aes-key'}
-
+    def test_get_aes_key_no_cache(self, mock_load_cached_key):
         aes_key = self.kms_manager.get_aes_key('mock-filter')
 
-        self.assertEqual(aes_key, b'new-aes-key')
-        mock_get_key_id.assert_called_once_with('mock-filter')
-        self.mock_kms_client.generate_data_key.assert_called_once_with(KeyId='mock-key-id', KeySpec='AES_256')
-        mock_cache_aes_key.assert_called_once_with('mock-filter', b'new-aes-key')
+        self.assertIsNone(aes_key)
+        mock_load_cached_key.assert_called_once_with('mock-filter')
 
     @patch('git_secret_protector.kms_key_manager.KMSKeyManager.load_cached_key', return_value=b'cached-aes-key')
     def test_get_aes_key_with_cache(self, mock_load_cached_key):

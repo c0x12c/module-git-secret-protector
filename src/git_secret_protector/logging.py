@@ -2,7 +2,7 @@ import logging
 import logging.handlers
 import os
 
-from settings import get_settings
+from git_secret_protector.settings import get_settings
 
 
 def configure_logging():
