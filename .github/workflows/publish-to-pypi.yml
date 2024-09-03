@@ -1,0 +1,113 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  PROJECT_URL: ${{ vars.PROJECT_URL }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Build package
+        run: poetry build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          pip install twine
+          twine upload dist/*
+
+      - name: Extract Git info
+        run: |
+          echo "GITHUB_AUTHOR=$(git log -1 --pretty=format:'%an <%ae>' | xargs)" >> $GITHUB_ENV
+          echo "GITHUB_REVISION=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "GITHUB_REPO=$(git config --get remote.origin.url)" >> $GITHUB_ENV
+
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          GITHUB_COMMITS=$(git --no-pager log --pretty=format:'%h (%an) %s' -n3 --no-color |  while read line || [ -n "$line" ]; do echo -n "- $line \\n"; done)
+          echo "GITHUB_COMMITS<<$EOF" >> "$GITHUB_ENV"
+          echo $GITHUB_COMMITS | sed "s/\"/'/g" >> "$GITHUB_ENV"
+          echo "$EOF" >> "$GITHUB_ENV"
+
+      - name: Slack Notification
+        id: slack
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":rocket: *Publish to PyPI*"
+                  }
+                },{
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Created by:* ${{ env.GITHUB_AUTHOR }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Project URL:* ${{ env.PROJECT_URL }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "```${{ env.GITHUB_COMMITS }}```"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View changes"
+                      },
+                      "style": "primary",
+                      "url": "${{ env.GITHUB_REPO }}/commit/${{ env.GITHUB_REVISION}}"
+                    },
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Run"
+                      },
+                      "style": "primary",
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

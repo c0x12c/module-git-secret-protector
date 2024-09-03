@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/" # The directory containing your `requirements.txt` or `pyproject.toml`
+    schedule:
+      interval: "weekly" # Update interval (daily, weekly, or monthly)
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 10
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"

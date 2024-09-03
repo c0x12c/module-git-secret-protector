@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "git-secret-protector"
+version = "0.1.0"
+description = "A tool for managing secrets in Git with AWS KMS integration."
+authors = ["Duc Duong <duc.duong@c0x12c.com>"]
+readme = "README.md"
+packages = [{ include = "git_secret_protector", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+boto3 = "^1.35.10"
+pycryptodome = "^3.20.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+mock = "^5.1.0"
+pyinstaller = "^6.10.0"
+
+[tool.poetry.scripts]
+git-secret-protector = "git_secret_protector.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
