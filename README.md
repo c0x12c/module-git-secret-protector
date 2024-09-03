@@ -1,6 +1,6 @@
 # git-secret-protector
 
-`spartan-git_secret_protector` is a Python-based CLI tool designed to securely manage and protect sensitive files in your Git repositories. It integrates with AWS Parameter Store to encrypt and decrypt secrets, ensuring that your sensitive data remains secure throughout your development process.
+`spartan-git-secret-protector` is a Python-based CLI tool designed to securely manage and protect sensitive files in your Git repositories. It integrates with AWS Parameter Store to encrypt and decrypt secrets, ensuring that your sensitive data remains secure throughout your development process.
 
 ## Features
 
@@ -10,12 +10,17 @@
 - **Git Hooks Integration**: Integrates with Git hooks to automatically manage secrets during Git operations.
 - **Logging**: Configurable logging for detailed tracking of operations and errors.
 
-## Installation
+## Install Guide
 
-You can install the `git_secret_protector` module via pip:
+### Requirements
+
+- pipx ([Download](https://pipx.pypa.io/stable/installation/))
+- Poetry ([Download](https://python-poetry.org/docs/#installation))
+
+You can install the `git-secret-protector` module via pipx:
 
 ```sh
-pip install git_secret_protector
+pipx install git-secret-protector
 ```
 
 ## Usage
@@ -25,7 +30,7 @@ pip install git_secret_protector
 Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM. Then, initialize your repository for secret protection by installing Git clean and smudge filter and setting up the module.
 
 ```sh
-git_secret_protector install
+git-secret-protector install
 ```
 
 ### 2. Pull AES Key
@@ -33,7 +38,7 @@ git_secret_protector install
 Before encrypting or decrypting files, you need to pull the relevant AES keys from AWS Parameter Store for a specific filter:
 
 ```sh
-git_secret_protector pull-aes-key <filter_name>
+git-secret-protector pull-aes-key <filter_name>
 ```
 
 This command will pull the latest AES data key from AWS Parameter Store for the specified filter and cache it locally.
@@ -45,7 +50,7 @@ This command will decrypt the files in your working directory for the specified 
 #### Command to Rotate Keys
 
 ```sh
-git_secret_protector rotate-key <filter_name>
+git-secret-protector rotate-key <filter_name>
 ```
 
 This command will generate a new AES data key in AWS Parameter Store, re-encrypt your files associated with the specified filter with the new key, and update the local cache.
@@ -63,7 +68,7 @@ git reset --hard
 
 ### Configuration
 
-All configurations are managed through a `config.ini` file located in the `.git_secret_protector` directory. You can customize the following settings:
+All configurations are managed through a `config.ini` file located in the `.git-secret-protector` directory. You can customize the following settings:
 
 - **AWS Configuration**: Set your AWS region, profile, and other credentials.
 - **Logging**: Configure the log file path and rotation settings.
@@ -99,7 +104,7 @@ We welcome contributions! Please read our [CONTRIBUTING.md](CONTRIBUTING.md) for
 
 ## License
 
-`git_secret_protector` is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+`git-secret-protector` is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
 
 ## Changelog
 

@@ -21,14 +21,14 @@ This example demonstrates how to use the `git-secret-protector` module to manage
 
 3. **Setup AES key:**
 
-   Set up an AES key in AWS KMS for the sample-app filter:
+   Set up an AES key in AWS Parameter Store for the sample-app filter:
 
    ```sh
    git_secret_protector setup-aes-key sample-app
    ```
 
-4. **Pull KMS Key:**
-   Pull the KMS key for the sample-app filter:
+4. **Pull AES Key:**
+   Pull the AES key for the sample-app filter:
 
    ```sh
    git_secret_protector pull-kms-key sample-app
@@ -57,11 +57,11 @@ The config.ini file contains the settings for the git_secret_protector module. Y
 Logs are stored in the .git_secret_protector/logs directory by default. You can view these logs to track the operations and any errors.
 
 ## Notes
-- Make sure you have the necessary AWS permissions to create and manage KMS keys.
+- Make sure you have the necessary AWS permissions to create and manage Parameter Store parameters.
 - This example assumes that you have AWS credentials configured in your environment.
 
 ```
 ### Summary
 
-The `/examples/basic-usage` folder provides a simple, clear example of how to use the `git-secret-protector` module with the `sample-app` filter name. It demonstrates how to configure the module, encrypt and decrypt files, and manage keys with AWS KMS. This example should serve as a helpful starting point for users who want to integrate the module into their own projects.
+The `/examples/basic-usage` folder provides a simple, clear example of how to use the `git-secret-protector` module with the `sample-app` filter name. It demonstrates how to configure the module, encrypt and decrypt files, and manage keys with AWS Parameter Store. This example should serve as a helpful starting point for users who want to integrate the module into their own projects.
 ```

@@ -24,7 +24,7 @@ def setup_aes_key(args):
 def pull_aes_key(args):
     key_manager = AesKeyManager()
     key_manager.retrieve_key_and_iv(args.filter_name)
-    logger.info("KMS key pulled and cached for filter: %s", args.filter_name)
+    logger.info("AES key pulled and cached for filter: %s", args.filter_name)
 
 
 def rotate_key(args):
@@ -123,19 +123,19 @@ def main():
 
     subparsers = parser.add_subparsers(help="Available commands")
 
-    # Command to setup AES key in KMS
-    parser_setup_aes_key = subparsers.add_parser('setup-aes-key', help="Setup AES key in KMS")
+    # Command to setup AES key
+    parser_setup_aes_key = subparsers.add_parser('setup-aes-key', help="Setup AES key for a filter")
     parser_setup_aes_key.add_argument('filter_name', type=str, help="The filter name for the AES key")
     parser_setup_aes_key.set_defaults(func=setup_aes_key)
 
-    # Command to pull KMS keys
-    parser_pull_aes_key = subparsers.add_parser('pull-aes-key', help="Pull KMS key for a filter")
-    parser_pull_aes_key.add_argument('filter_name', type=str, help="The filter name for the KMS key")
+    # Command to pull AES key
+    parser_pull_aes_key = subparsers.add_parser('pull-aes-key', help="Pull AES key for a filter")
+    parser_pull_aes_key.add_argument('filter_name', type=str, help="The filter name for the AES key")
     parser_pull_aes_key.set_defaults(func=pull_aes_key)
 
-    # Command to rotate KMS keys
-    parser_rotate_key = subparsers.add_parser('rotate-key', help="Rotate KMS key and re-encrypt secrets")
-    parser_rotate_key.add_argument('filter_name', type=str, help="The filter name for the KMS key")
+    # Command to rotate AES keys
+    parser_rotate_key = subparsers.add_parser('rotate-key', help="Rotate AES key and re-encrypt secrets")
+    parser_rotate_key.add_argument('filter_name', type=str, help="The filter name for the AES key")
     parser_rotate_key.set_defaults(func=rotate_key)
 
     # Command to install Git hooks
