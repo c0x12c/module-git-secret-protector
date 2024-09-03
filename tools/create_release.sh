@@ -16,7 +16,7 @@ if test -f "pyproject.toml"; then
   git config --global user.name 'github-actions'
   git config --global user.email 'github-actions@users.noreply.github.com'
   git add pyproject.toml
-  git commit -m "Bump version to $RELEASE_VERSION [skip ci]"
+  git commit -m "Bump version to $RELEASE_VERSION"
   git push
 fi
 
