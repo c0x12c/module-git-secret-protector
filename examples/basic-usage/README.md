@@ -1,6 +1,6 @@
 # Basic Usage Example
 
-This example demonstrates how to use the `spartan-git-secret-protector` module to manage secrets within a Git repository.
+This example demonstrates how to use the `git-secret-protector` module to manage secrets within a Git repository.
 
 ## Setup
 
@@ -63,5 +63,5 @@ Logs are stored in the .git_secret_protector/logs directory by default. You can 
 ```
 ### Summary
 
-The `/examples/basic-usage` folder provides a simple, clear example of how to use the `spartan-git-secret-protector` module with the `sample-app` filter name. It demonstrates how to configure the module, encrypt and decrypt files, and manage keys with AWS KMS. This example should serve as a helpful starting point for users who want to integrate the module into their own projects.
+The `/examples/basic-usage` folder provides a simple, clear example of how to use the `git-secret-protector` module with the `sample-app` filter name. It demonstrates how to configure the module, encrypt and decrypt files, and manage keys with AWS KMS. This example should serve as a helpful starting point for users who want to integrate the module into their own projects.
 ```

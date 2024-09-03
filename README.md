@@ -2,7 +2,7 @@ Here’s the updated `README.md` file with the "Pulling KMS Keys" section moved 
 
 ---
 
-# spartan-git-secret-protector
+# git-secret-protector
 
 `spartan-git_secret_protector` is a Python-based CLI tool designed to securely manage and protect sensitive files in your Git repositories. It integrates with AWS KMS to encrypt and decrypt secrets, ensuring that your sensitive data remains secure throughout your development process.
 
@@ -26,51 +26,44 @@ pip install git_secret_protector
 
 ### 1. Initial Setup
 
-Before using the tool, ensure you have the necessary AWS permissions to manage KMS keys. Then, initialize your repository for secret protection by installing Git hooks and setting up the module:
+Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM. Then, initialize your repository for secret protection by installing Git clean and smudge filter and setting up the module.
 
 ```sh
 git_secret_protector install
 ```
 
-### 2. Pulling KMS Keys
+### 2. Pull AES Key
 
 Before encrypting or decrypting files, you need to pull the relevant KMS keys for a specific filter:
 
 ```sh
-git_secret_protector pull-kms-key <filter_name>
+git_secret_protector pull-aes-key <filter_name>
 ```
 
 This command will pull the latest AES data key from AWS KMS for the specified filter and cache it locally.
 
-### 3. Encrypting Files
-
-To encrypt files in your repository:
-
-```sh
-git_secret_protector encrypt <filter_name>
-```
-
-The tool will automatically detect files based on the patterns defined in your `.gitattributes` file for the specified filter and encrypt them using the appropriate AES data key.
-
-### 4. Decrypting Files
-
-To decrypt files:
-
-```sh
-git_secret_protector decrypt <filter_name>
-```
-
 This command will decrypt the files in your working directory for the specified filter, making them available for editing.
 
-### 5. Key Rotation
+### 3. Key Rotation
 
-Rotate your AES data keys periodically for enhanced security:
+#### Command to Rotate Keys
 
 ```sh
 git_secret_protector rotate-key <filter_name>
 ```
 
 This command will generate a new AES data key in KMS, re-encrypt your files associated with the specified filter with the new key, and update the local cache.
+
+#### Post-Rotation Code Reset
+After rotating the keys, it is necessary to clear the Git cache and re-checkout all files. This step ensures that the smudge filters are triggered, allowing the files to be decrypted with the new key.
+
+```
+# Remove all files from the index to clear the Git cache
+git rm --cached -r .
+
+# Force Git to re-checkout all files, triggering smudge filters
+git reset --hard
+```
 
 ### Configuration
 

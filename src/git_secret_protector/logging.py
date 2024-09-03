@@ -8,7 +8,7 @@ from git_secret_protector.settings import get_settings
 def configure_logging():
     settings = get_settings()
     log_file = settings.log_file
-    log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    log_level = settings.log_level
     log_max_size = settings.log_max_size
     log_backup_count = settings.log_backup_count
 
@@ -22,7 +22,3 @@ def configure_logging():
     handler.setFormatter(formatter)
 
     logging.basicConfig(level=log_level, handlers=[handler])
-
-
-# Call this function at the start of your program
-configure_logging()
