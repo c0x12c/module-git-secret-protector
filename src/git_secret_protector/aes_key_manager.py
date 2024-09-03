@@ -14,6 +14,8 @@ class AesKeyManager:
         self.cache_dir = get_settings().cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
 
+        self.module_name = get_settings().module_name
+
     @property
     def ssm_client(self):
         if self._ssm_client is None:
@@ -33,7 +35,7 @@ class AesKeyManager:
 
         # Store the serialized key and IV in AWS SSM Parameter Store
         self.ssm_client.put_parameter(
-            Name=f"/encryption/{filter_name}/key_iv",
+            Name=self._ssm_parameter_name(filter_name),
             Value=json_data,
             Type='SecureString',
             Overwrite=True
@@ -48,7 +50,7 @@ class AesKeyManager:
             return base64.b64decode(local_data['aes_key']), base64.b64decode(local_data['iv'])
 
         response = self.ssm_client.get_parameter(
-            Name=f"/encryption/{filter_name}/key_iv",
+            Name=self._ssm_parameter_name(filter_name),
             WithDecryption=True
         )
         data = json.loads(response['Parameter']['Value'])
@@ -74,9 +76,11 @@ class AesKeyManager:
     def destroy_aes_key_and_iv(self, filter_name):
         """Destroy the AES key and IV for a specific filter name in AWS SSM."""
         try:
-            parameter_name = f"/encryption/{filter_name}/key_iv"
-            self.ssm_client.delete_parameter(Name=parameter_name)
+            self.ssm_client.delete_parameter(Name=self._ssm_parameter_name(filter_name))
             logging.info(f"Successfully destroyed AES key and IV in SSM for filter: {filter_name}")
         except Exception as e:
             logging.error(f"Failed to destroy AES key and IV for filter {filter_name}: {e}")
             raise
+
+    def _ssm_parameter_name(self, filter_name):
+        return f"/encryption/{self.module_name}/{filter_name}/key_iv"
