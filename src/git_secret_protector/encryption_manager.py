@@ -1,10 +1,12 @@
 import base64
 import logging
 import os
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-from git_secret_protector.git_attributes_parser import GitAttributesParser
+
 from git_secret_protector.aes_key_manager import AesKeyManager
+from git_secret_protector.git_attributes_parser import GitAttributesParser
 
 logger = logging.getLogger(__name__)
 MAGIC_HEADER = b'ENCRYPTED'  # Magic header to identify encrypted files
@@ -94,3 +96,13 @@ class EncryptionManager:
         key_manager = AesKeyManager()
         aes_key, iv = key_manager.retrieve_key_and_iv(filter_name)
         return cls(aes_key, iv, git_attributes_parser)
+
+    @staticmethod
+    def is_encrypted(file_path):
+        try:
+            with open(file_path, 'rb') as file:
+                header = file.read(len(MAGIC_HEADER))
+                return header == MAGIC_HEADER
+        except IOError:
+            logger.error(f"Error reading file: {file_path}")
+            return False

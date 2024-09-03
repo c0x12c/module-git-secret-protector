@@ -70,8 +70,6 @@ config/*.conf filter=configfilter
         aes_key_manager = AesKeyManager()
         filter_name = 'secretfilter'
 
-        # Setup AES key and IV for encryption
-        aes_key_manager.setup_aes_key_and_iv(filter_name)
         aes_key, iv = aes_key_manager.retrieve_key_and_iv(filter_name)
 
         # Instantiate the encryption manager

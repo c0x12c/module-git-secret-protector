@@ -66,7 +66,15 @@ git rm --cached -r .
 git reset --hard
 ```
 
-### Configuration
+### 4. View Encryption Status
+
+Command to obtain a comprehensive overview of the encryption status of files within the repository:
+
+```sh
+git-secret-protector status
+```
+
+## Configuration
 
 All configurations are managed through a `config.ini` file located in the `.git-secret-protector` directory. You can customize the following settings:
 
@@ -97,14 +105,6 @@ Logs are stored in the `logs/` directory by default, and you can configure the l
 ```sh
 poetry run pytest tests/unit
 ```
-
-### Contributing
-
-We welcome contributions! Please read our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute.
-
-## License
-
-`git-secret-protector` is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
 
 ## Changelog
 

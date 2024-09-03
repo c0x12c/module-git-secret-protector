@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Caching of AES data keys for performance improvements.
 - Unit and integration tests for core functionalities.
 - Error handling and logging for better debugging and reliability.
+- Add `init` command to set up the initial configuration.
+- Add `status` command to view the encryption status of files.
 
 ### Changed
 

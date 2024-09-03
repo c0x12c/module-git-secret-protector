@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
+from botocore.exceptions import ClientError
+
 from git_secret_protector.aes_key_manager import AesKeyManager
 
 
@@ -34,6 +36,14 @@ class TestAesKeyManager(unittest.TestCase):
     @patch('boto3.client')
     def test_setup_aes_key_and_iv(self, mock_boto_client):
         filter_name = secrets.token_hex(8)
+
+        # Configure the mock to raise a ClientError for get_parameter
+        mock_boto_client.return_value.get_parameter.side_effect = ClientError({
+            'Error': {
+                'Code': 'ParameterNotFound',
+                'Message': 'Parameter not found'
+            }
+        }, 'GetParameter')
 
         self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
