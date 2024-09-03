@@ -4,22 +4,23 @@ from dataclasses import dataclass, field
 
 BASE_DIR = '.git_secret_protector'
 
+
 @dataclass
 class Settings:
-    # Singleton instance variable
-    _instance: 'Settings' = field(default=None, init=False, repr=False)
+    _instance: 'Settings' = field(default=None, init=False, repr=False, compare=False)
 
     config_file: str = os.path.join(BASE_DIR, 'config.ini')
     cache_dir: str = os.path.join(BASE_DIR, 'cache')
     log_dir: str = os.path.join(BASE_DIR, 'logs')
     module_name: str = 'git-secret-protector'
-    log_file: str =  field(init=False)
+    log_file: str = field(init=False, default='')
     log_level: str = 'INFO'
     log_max_size: int = 10485760  # 10MB
     log_backup_count: int = 3
-    config: configparser.ConfigParser = field(default_factory=configparser.ConfigParser, init=False)
+    config: configparser.ConfigParser = field(init=False, default=None)
 
     def __post_init__(self):
+        self.config = configparser.ConfigParser()
         self.log_file = os.path.join(self.log_dir, 'git_secret_protector.log')
         self._load_config()
 
