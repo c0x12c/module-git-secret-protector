@@ -1,10 +1,10 @@
+import base64
+import json
 import os
+import secrets
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
-import base64
-import json
-import secrets
 
 from git_secret_protector.aes_key_manager import AesKeyManager
 
@@ -17,6 +17,7 @@ class TestAesKeyManager(unittest.TestCase):
         self.mock_settings = MagicMock()
         self.mock_temp_dir = tempfile.TemporaryDirectory()
         self.mock_settings.cache_dir = self.mock_temp_dir.name
+        self.mock_settings.module_name = secrets.token_hex(8)
         mock_get_settings.return_value = self.mock_settings
 
         self.mock_ssm_client = MagicMock()
@@ -36,10 +37,12 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
+        expected_parameter_name = f"/encryption/{self.mock_settings.module_name}/{filter_name}/key_iv"
+
         mock_boto_client.return_value.put_parameter.assert_called_once()
         args, kwargs = mock_boto_client.return_value.put_parameter.call_args
-        self.assertIn(filter_name, kwargs['Name'])
-        self.assertIn('SecureString', kwargs['Type'])
+        self.assertEqual(kwargs['Name'], expected_parameter_name)
+        self.assertEqual('SecureString', kwargs['Type'])
         data = json.loads(kwargs['Value'])
         self.assertTrue('aes_key' in data and 'iv' in data)
 
