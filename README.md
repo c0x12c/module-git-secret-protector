@@ -1,7 +1,3 @@
-Here’s the updated `README.md` file with the "Pulling KMS Keys" section moved ahead of "Encrypting Files" in the Usage section:
-
----
-
 # git-secret-protector
 
 `spartan-git_secret_protector` is a Python-based CLI tool designed to securely manage and protect sensitive files in your Git repositories. It integrates with AWS KMS to encrypt and decrypt secrets, ensuring that your sensitive data remains secure throughout your development process.
