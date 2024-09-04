@@ -2,27 +2,42 @@ import configparser
 import os
 from dataclasses import dataclass, field
 
-BASE_DIR = '.git_secret_protector'
-
 
 @dataclass
 class Settings:
     _instance: 'Settings' = field(default=None, init=False, repr=False, compare=False)
-
-    config_file: str = os.path.join(BASE_DIR, 'config.ini')
-    cache_dir: str = os.path.join(BASE_DIR, 'cache')
-    log_dir: str = os.path.join(BASE_DIR, 'logs')
+    module_folder: str = '.git_secret_protector'
+    base_dir: str = field(init=False)
+    module_dir: str = field(init=False)
+    config_file: str = field(init=False)
+    cache_dir: str = field(init=False)
+    log_dir: str = field(init=False)
     module_name: str = 'git-secret-protector'
-    log_file: str = field(init=False, default='')
+    log_file: str = field(init=False)
     log_level: str = 'INFO'
     log_max_size: int = 10485760  # 10MB
     log_backup_count: int = 3
-    config: configparser.ConfigParser = field(init=False, default=None)
+    config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
-        self.config = configparser.ConfigParser()
+        self.base_dir = self.find_base_dir()
+        self.module_dir = os.path.join(self.base_dir, self.module_folder)
+        self.config_file = os.path.join(self.module_dir, 'config.ini')
+        self.cache_dir = os.path.join(self.module_dir, 'cache')
+        self.log_dir = os.path.join(self.module_dir, 'logs')
         self.log_file = os.path.join(self.log_dir, 'git_secret_protector.log')
+        self.config = configparser.ConfigParser()
         self._load_config()
+
+    def find_base_dir(self):
+        current_dir = os.getcwd()
+        while current_dir != os.path.dirname(current_dir):  # Traverse up to the root directory
+            possible_dir = os.path.join(current_dir, self.module_folder)
+            if os.path.exists(possible_dir):
+                return current_dir
+            current_dir = os.path.dirname(current_dir)
+        raise FileNotFoundError(
+            "The git-secret-protector module folder was not found in any ascendant directories. Please ensure the module is set up correctly.")
 
     def _load_config(self):
         if os.path.exists(self.config_file):

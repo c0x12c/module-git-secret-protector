@@ -25,7 +25,7 @@ pipx install git-secret-protector
 ## Usage
 
 ### 1. Initial Setup
- 
+
 #### Set up AES key
 
 Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM.
