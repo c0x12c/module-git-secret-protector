@@ -128,9 +128,9 @@ def decrypt_files_by_filter(args):
         encryption_manager = EncryptionManager(aes_key, iv, git_attributes_parser)
 
         for file in files:
-            logger.info("Decrypting file: %s", file)
+            logger.debug("Decrypting file: %s", file)
             encryption_manager.decrypt_file(file)
-            logger.info("Successfully decrypted: %s", file)
+            logger.debug("Successfully decrypted: %s", file)
 
         logger.info("All files decrypted for filter: %s", filter_name)
     except Exception as e:
