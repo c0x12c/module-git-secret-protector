@@ -27,23 +27,23 @@ pipx install git-secret-protector
 
 ### 1. Initial Setup
 
-Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM. Then, initialize your repository for secret protection by installing Git clean and smudge filter and setting up the module.
+Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM.
 
 ```sh
-git-secret-protector install
+git-secret-protector init <filter_name>
 ```
 
-### 2. Pull AES Key
+This command sets up the Git clean and smudge filters specific to the provided filter name. It also generates an AES key and IV, then securely store them in the AWS Parameter Store, Please ensure you are logged into AWS in your current terminal session before executing the command.
 
-Before encrypting or decrypting files, you need to pull the relevant AES keys from AWS Parameter Store for a specific filter:
+### 2. Pull AES Key and IV
+
+Before encrypting or decrypting files, it's necessary to retrieve the relevant AES keys from the AWS Parameter Store for specific filters:
 
 ```sh
 git-secret-protector pull-aes-key <filter_name>
 ```
 
-This command will pull the latest AES data key from AWS Parameter Store for the specified filter and cache it locally.
-
-This command will decrypt the files in your working directory for the specified filter, making them available for editing.
+This command fetches the latest AES data key and IV from AWS Parameter Store for the designated filter and caches them locally for subsequent operations. This step ensures that you have the correct keys for encryption or decryption tasks related to the specified filter.
 
 ### 3. Key Rotation
 
@@ -87,8 +87,8 @@ All configurations are managed through a `config.ini` file located in the `.git-
 Define which files to encrypt in your `.gitattributes` file:
 
 ```
-secrets/*.tfstate filter=git-crypt-app diff=git-crypt-app
-config/**/credentials/* filter=git-crypt-shared diff=git-crypt-shared
+secrets/*.tfstate filter=sample-app diff=sample-app
+config/**/credentials/* filter=sample-shared diff=sample-shared
 ```
 
 ### Logging
