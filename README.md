@@ -15,7 +15,6 @@
 ### Requirements
 
 - pipx ([Download](https://pipx.pypa.io/stable/installation/))
-- Poetry ([Download](https://python-poetry.org/docs/#installation))
 
 You can install the `git-secret-protector` module via pipx:
 
@@ -26,6 +25,8 @@ pipx install git-secret-protector
 ## Usage
 
 ### 1. Initial Setup
+ 
+#### Set up AES key
 
 Before using the tool, ensure you have the necessary AWS permissions to manage AWS MKS & SSM.
 
@@ -33,9 +34,17 @@ Before using the tool, ensure you have the necessary AWS permissions to manage A
 git-secret-protector init <filter_name>
 ```
 
-This command sets up the Git clean and smudge filters specific to the provided filter name. It also generates an AES key and IV, then securely store them in the AWS Parameter Store, Please ensure you are logged into AWS in your current terminal session before executing the command.
+**NOTE: Perform this setup once per repository during initial configuration.**
 
-### 2. Pull AES Key and IV
+### 2. Configure Git Filters
+
+onfigure the Git clean and smudge filters for the specified filter name
+
+```sh
+git-secret-protector init <filter_name>
+```
+
+### 3. Pull AES Key and IV
 
 Before encrypting or decrypting files, it's necessary to retrieve the relevant AES keys from the AWS Parameter Store for specific filters:
 
@@ -45,7 +54,7 @@ git-secret-protector pull-aes-key <filter_name>
 
 This command fetches the latest AES data key and IV from AWS Parameter Store for the designated filter and caches them locally for subsequent operations. This step ensures that you have the correct keys for encryption or decryption tasks related to the specified filter.
 
-### 3. Key Rotation
+### 4. Key Rotation
 
 #### Command to Rotate Keys
 
@@ -66,7 +75,7 @@ git rm --cached -r .
 git reset --hard
 ```
 
-### 4. View Encryption Status
+### 5. View Encryption Status
 
 Command to obtain a comprehensive overview of the encryption status of files within the repository:
 
