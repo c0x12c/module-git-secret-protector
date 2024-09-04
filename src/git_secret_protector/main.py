@@ -164,9 +164,9 @@ def main():
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Command to init filter
-    parser_init_aes_key = subparsers.add_parser('init', help="Init filter actions in git config")
-    parser_init_aes_key.add_argument('filter_name', type=str, help="The filter name")
-    parser_init_aes_key.set_defaults(func=init_filter)
+    parser_init = subparsers.add_parser('init', help="Init filter actions in git config")
+    parser_init.add_argument('filter_name', type=str, help="The filter name")
+    parser_init.set_defaults(func=init_filter)
 
     # Command to set up AES key
     parser_setup_aes_key = subparsers.add_parser('setup-aes-key', help="Set up AES key for a filter")
