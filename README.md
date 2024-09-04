@@ -78,7 +78,6 @@ git-secret-protector status
 
 All configurations are managed through a `config.ini` file located in the `.git-secret-protector` directory. You can customize the following settings:
 
-- **AWS Configuration**: Set your AWS region, profile, and other credentials.
 - **Logging**: Configure the log file path and rotation settings.
 - **Module Name**: Specify a custom module name for organizing keys in AWS Parameter Store.
 
