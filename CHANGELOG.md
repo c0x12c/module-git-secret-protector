@@ -9,8 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- Add a `decrypt-files` command to decrypt all files under a specific filter.
 
 ### Changed
+- Separate the init command into two commands: `init` and `setup-aes-key`.
 
 ### Removed
 

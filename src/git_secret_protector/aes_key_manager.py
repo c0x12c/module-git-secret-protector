@@ -113,8 +113,7 @@ class AesKeyManager:
         try:
             self.ssm_client.get_parameter(Name=parameter_name, WithDecryption=True)
             return True
-        except ClientError as e:
-            logging.error("Failed to check if parameter '%s': {%s}", parameter_name, str(e))
+        except ClientError:
             return False
 
     def _ssm_parameter_name(self, filter_name):

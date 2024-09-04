@@ -12,6 +12,15 @@ from git_secret_protector.logging import configure_logging
 logger = logging.getLogger(__name__)
 
 
+def setup_aes_key(args):
+    filter_name = args.filter_name
+    logger.info("Set up AES key for filter: %s", filter_name)
+
+    key_manager = AesKeyManager()
+    key_manager.setup_aes_key_and_iv(args.filter_name)
+    logger.info(f"Filters for '{filter_name}' have been set up successfully.")
+
+
 def init_filter(args):
     filter_name = args.filter_name
     logger.info("Initializing filter: %s", filter_name)
@@ -31,10 +40,6 @@ def init_filter(args):
     subprocess.run(['git', 'config', f'filter.{filter_name}.smudge', 'git-secret-protector decrypt %f'], check=True)
     subprocess.run(['git', 'config', f'filter.{filter_name}.required', 'true'], check=True)
     logger.debug("Git clean & smudge filters for '%s' have been set up successfully.", filter_name)
-
-    key_manager = AesKeyManager()
-    key_manager.setup_aes_key_and_iv(args.filter_name)
-    logger.info(f"Filters for '{filter_name}' have been set up successfully.")
 
 
 def pull_aes_key(args):
@@ -106,6 +111,33 @@ def encrypt_stdin(args):
     sys.stdout.buffer.flush()
 
 
+def decrypt_files_by_filter(args):
+    filter_name = args.filter_name
+    logger.info("Decrypting files for filter: %s", filter_name)
+
+    try:
+        git_attributes_parser = GitAttributesParser()
+        files = git_attributes_parser.get_files_for_filter(filter_name)
+
+        if not files:
+            logger.info("No files to decrypt for filter: %s", filter_name)
+            return
+
+        key_manager = AesKeyManager()
+        aes_key, iv = key_manager.retrieve_key_and_iv(filter_name)
+        encryption_manager = EncryptionManager(aes_key, iv, git_attributes_parser)
+
+        for file in files:
+            logger.debug("Decrypting file: %s", file)
+            encryption_manager.decrypt_file(file)
+            logger.debug("Successfully decrypted: %s", file)
+
+        logger.info("All files decrypted for filter: %s", filter_name)
+    except Exception as e:
+        logger.error("Failed to decrypt files for filter %s: %s", filter_name, e)
+        raise
+
+
 def status_command(args):
     logger.info("Gathering status of all filters and their files...")
     git_attributes_parser = GitAttributesParser()
@@ -132,9 +164,14 @@ def main():
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Command to init filter
-    parser_setup_aes_key = subparsers.add_parser('init', help="Init a filter with AES key and update git config")
-    parser_setup_aes_key.add_argument('filter_name', type=str, help="The filter name")
-    parser_setup_aes_key.set_defaults(func=init_filter)
+    parser_init = subparsers.add_parser('init', help="Init filter actions in git config")
+    parser_init.add_argument('filter_name', type=str, help="The filter name")
+    parser_init.set_defaults(func=init_filter)
+
+    # Command to set up AES key
+    parser_setup_aes_key = subparsers.add_parser('setup-aes-key', help="Set up AES key for a filter")
+    parser_setup_aes_key.add_argument('filter_name', type=str, help="The filter name for the AES key")
+    parser_setup_aes_key.set_defaults(func=setup_aes_key)
 
     # Command to pull AES key
     parser_pull_aes_key = subparsers.add_parser('pull-aes-key', help="Pull AES key for a filter")
@@ -155,6 +192,11 @@ def main():
     parser_encrypt_stdin = subparsers.add_parser('encrypt', help="Encrypt data from stdin")
     parser_encrypt_stdin.add_argument('file_name', type=str, help="Filename for encryption")
     parser_encrypt_stdin.set_defaults(func=encrypt_stdin)
+
+    # Command to decrypt files for a specific filter
+    parser_decrypt_files = subparsers.add_parser('decrypt-files', help="Decrypt files for a specific filter")
+    parser_decrypt_files.add_argument('filter_name', type=str, help="The filter name whose files to decrypt")
+    parser_decrypt_files.set_defaults(func=decrypt_files_by_filter)
 
     # Status command
     parser_status = subparsers.add_parser('status', help="List all filters and file statuses")
