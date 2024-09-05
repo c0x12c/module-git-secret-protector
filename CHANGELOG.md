@@ -6,11 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
-## [Unreleased]
+## [0.3.0] - 2024-09-05
 
 ### Added
 - Add a `decrypt-files` command to decrypt all files under a specific filter.
 - Create config.ini when initializing the module
+- Add caching for Poetry in the PR check pipeline
 
 ### Changed
 - Separate the init command into two commands: `init` and `setup-aes-key`.
