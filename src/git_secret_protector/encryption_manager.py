@@ -21,72 +21,62 @@ class EncryptionManager:
         self.git_attributes_parser = git_attributes_parser
 
     def encrypt_data(self, data):
-        if data.startswith(MAGIC_HEADER):
-            logger.warning("Data already contains MAGIC_HEADER. Skipping encryption.")
-            return data
-
-        ciphertext = self._perform_encryption(data)
-        return MAGIC_HEADER + ciphertext
+        return self._perform_encryption(data)
 
     def decrypt_data(self, data):
-        if not data.startswith(MAGIC_HEADER):
-            logger.warning("Data does not start with MAGIC HEADER. Skipping decryption.")
-            return data
-
-        encrypted_data = data[len(MAGIC_HEADER):]
-        plaintext = self._perform_decryption(encrypted_data)
-        return plaintext
+        return self._perform_decryption(data)
 
     def encrypt(self, filter_name):
         files_to_encrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
 
         for file_path in files_to_encrypt:
-            encrypted_data = self.encrypt_file(file_path)
-            with open(file_path, 'wb') as f:
-                f.write(encrypted_data)
-            logger.info("File encrypted: %s", file_path)
+            self.encrypt_file(file_path)
 
     def decrypt(self, filter_name):
         files_to_decrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
 
         for file_path in files_to_decrypt:
-            decrypted_data = self.decrypt_file(file_path)
-            with open(file_path, 'wb') as f:
-                f.write(decrypted_data)
-            logger.info("File decrypted: %s", file_path)
+            self.decrypt_file(file_path)
 
     def encrypt_file(self, file_path):
-        logger.info("Encrypting file: %s", file_path)
         with open(file_path, 'rb') as f:
-            data = f.read()
+            plain_data = f.read()
 
-        if data.startswith(MAGIC_HEADER):
-            logger.info("File already contains MAGIC_HEADER. Skipping encryption.")
-            return data
-
-        ciphertext = self._perform_encryption(data)
-        return MAGIC_HEADER + ciphertext
+        encrypted_data = self._perform_encryption(plain_data)
+        with open(file_path, 'wb') as f:
+            f.write(encrypted_data)
+        logger.info("File encrypted and overwritten: %s", file_path)
 
     def decrypt_file(self, file_path):
         logger.info("Decrypting file: %s", file_path)
         with open(os.path.abspath(file_path), 'rb') as f:
             data = f.read()
 
+        plaintext = self._perform_decryption(data)
+
+        # Write the decrypted data back to the file
+        with open(file_path, 'wb') as f:
+            f.write(plaintext)
+
+        logger.debug("Successfully decrypted and wrote back to: %s", file_path)
+
+    def _perform_encryption(self, data: bytes) -> bytes:
+        if data.startswith(MAGIC_HEADER):
+            logger.warning("Data already contains MAGIC_HEADER. Skipping encryption.")
+            return data
+
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
+        ciphertext = cipher.encrypt(pad(data, AES.block_size))
+        return MAGIC_HEADER + base64.b64encode(ciphertext)  # Base64 encode the result
+
+    def _perform_decryption(self, data: bytes) -> bytes:
         if not data.startswith(MAGIC_HEADER):
-            logger.warning("File does not start with MAGIC HEADER. Skipping decryption.")
+            logger.warning("Data does not start with MAGIC HEADER. Skipping decryption.")
             return data
 
         encrypted_data = data[len(MAGIC_HEADER):]
-        plaintext = self._perform_decryption(encrypted_data)
-        return plaintext
 
-    def _perform_encryption(self, plaintext: bytes) -> bytes:
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
-        ciphertext = cipher.encrypt(pad(plaintext, AES.block_size))
-        return base64.b64encode(ciphertext)  # Base64 encode the result
-
-    def _perform_decryption(self, encrypted_text: bytes) -> bytes:
-        ciphertext = base64.b64decode(encrypted_text)
+        ciphertext = base64.b64decode(encrypted_data)
         cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
         plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
         return plaintext
