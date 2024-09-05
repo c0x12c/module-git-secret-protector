@@ -1,11 +1,19 @@
 import fnmatch
 import glob
+import logging
 import os
 import re
 
+from git_secret_protector.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
 
 class GitAttributesParser:
-    def __init__(self, git_attributes_file='.gitattributes'):
+    def __init__(self):
+        settings = get_settings()
+        git_attributes_file = os.path.join(settings.base_dir, '.gitattributes')
+
         self.git_attributes_file = git_attributes_file
         self.patterns = self._parse_patterns()
 

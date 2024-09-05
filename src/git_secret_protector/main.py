@@ -1,20 +1,49 @@
 import argparse
+import configparser
 import logging
 import subprocess
 import sys
+from pathlib import Path
 
 from git_secret_protector.aes_key_manager import AesKeyManager
 from git_secret_protector.encryption_manager import EncryptionManager
 from git_secret_protector.git_attributes_parser import GitAttributesParser
 from git_secret_protector.key_rotator import KeyRotator
 from git_secret_protector.logging import configure_logging
+from git_secret_protector.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+MODULE_FOLDER = '.git_secret_protector'
+
+
+def init_module_folder():
+    module_path = Path(get_settings().module_dir)
+
+    if not module_path.exists():
+        module_path.mkdir(parents=True, exist_ok=True)
+        (module_path / 'cache').mkdir(exist_ok=True)
+        (module_path / 'logs').mkdir(exist_ok=True)
+
+    # Check if config.ini exists, if not, create it with default settings
+    config_file = module_path / 'config.ini'
+    if not config_file.exists():
+        config = configparser.ConfigParser()
+        config['DEFAULT'] = {
+            'module_name': 'git-secret-protector',
+            'log_level': 'WARN',
+            'log_max_size': '10485760'  # 10MB
+        }
+
+        with open(config_file, 'w') as configfile:
+            config.write(configfile)
 
 
 def setup_aes_key(args):
     filter_name = args.filter_name
     logger.info("Set up AES key for filter: %s", filter_name)
+
+    init_module_folder()
 
     key_manager = AesKeyManager()
     key_manager.setup_aes_key_and_iv(args.filter_name)
@@ -24,6 +53,8 @@ def setup_aes_key(args):
 def init_filter(args):
     filter_name = args.filter_name
     logger.info("Initializing filter: %s", filter_name)
+
+    init_module_folder()
 
     # Check for existing Git filters
     check_clean = subprocess.getoutput(f'git config --get filter.{filter_name}.clean')

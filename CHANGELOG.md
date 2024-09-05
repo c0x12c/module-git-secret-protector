@@ -10,11 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Added
 - Add a `decrypt-files` command to decrypt all files under a specific filter.
+- Create config.ini when initializing the module
 
 ### Changed
 - Separate the init command into two commands: `init` and `setup-aes-key`.
-
-### Removed
 
 ## [0.2.0] - 2024-09-03
 
