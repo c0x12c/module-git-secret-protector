@@ -1,7 +1,6 @@
 import argparse
 import configparser
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +10,7 @@ from git_secret_protector.encryption_manager import EncryptionManager
 from git_secret_protector.git_attributes_parser import GitAttributesParser
 from git_secret_protector.key_rotator import KeyRotator
 from git_secret_protector.logging import configure_logging
+from git_secret_protector.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,8 @@ MODULE_FOLDER = '.git_secret_protector'
 
 
 def init_module_folder():
-    base_dir = os.getcwd()
+    module_path = Path(get_settings().module_dir)
 
-    module_path = Path(base_dir) / MODULE_FOLDER
     if not module_path.exists():
         module_path.mkdir(parents=True, exist_ok=True)
         (module_path / 'cache').mkdir(exist_ok=True)
@@ -54,6 +53,8 @@ def setup_aes_key(args):
 def init_filter(args):
     filter_name = args.filter_name
     logger.info("Initializing filter: %s", filter_name)
+
+    init_module_folder()
 
     # Check for existing Git filters
     check_clean = subprocess.getoutput(f'git config --get filter.{filter_name}.clean')

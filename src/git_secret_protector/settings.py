@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Settings:
+    BASE_DIR_LOOKUP_FOLDER = ".git"
+
     _instance: 'Settings' = field(default=None, init=False, repr=False, compare=False)
     module_folder: str = '.git_secret_protector'
     base_dir: str = field(init=False)
@@ -32,7 +34,7 @@ class Settings:
     def find_base_dir(self):
         current_dir = os.getcwd()
         while current_dir != os.path.dirname(current_dir):  # Traverse up to the root directory
-            possible_dir = os.path.join(current_dir, self.module_folder)
+            possible_dir = os.path.join(current_dir, Settings.BASE_DIR_LOOKUP_FOLDER)
             if os.path.exists(possible_dir):
                 return current_dir
             current_dir = os.path.dirname(current_dir)
