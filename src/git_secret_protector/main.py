@@ -157,15 +157,34 @@ def decrypt_files_by_filter(args):
         key_manager = AesKeyManager()
         aes_key, iv = key_manager.retrieve_key_and_iv(filter_name)
         encryption_manager = EncryptionManager(aes_key, iv, git_attributes_parser)
-
-        for file in files:
-            logger.debug("Decrypting file: %s", file)
-            encryption_manager.decrypt_file(file)
-            logger.debug("Successfully decrypted: %s", file)
+        encryption_manager.decrypt(filter_name)
 
         logger.info("All files decrypted for filter: %s", filter_name)
     except Exception as e:
         logger.error("Failed to decrypt files for filter %s: %s", filter_name, e)
+        raise
+
+
+def encrypt_files_by_filter(args):
+    filter_name = args.filter_name
+    logger.info("Encrypting files for filter: %s", filter_name)
+
+    try:
+        git_attributes_parser = GitAttributesParser()
+        files = git_attributes_parser.get_files_for_filter(filter_name)
+
+        if not files:
+            logger.info("No files to encrypt for filter: %s", filter_name)
+            return
+
+        key_manager = AesKeyManager()
+        aes_key, iv = key_manager.retrieve_key_and_iv(filter_name)
+        encryption_manager = EncryptionManager(aes_key, iv, git_attributes_parser)
+        encryption_manager.encrypt(filter_name)
+
+        logger.info("All files encrypted for filter: %s", filter_name)
+    except Exception as e:
+        logger.error("Failed to encrypt files for filter %s: %s", filter_name, e)
         raise
 
 
@@ -228,6 +247,11 @@ def main():
     parser_decrypt_files = subparsers.add_parser('decrypt-files', help="Decrypt files for a specific filter")
     parser_decrypt_files.add_argument('filter_name', type=str, help="The filter name whose files to decrypt")
     parser_decrypt_files.set_defaults(func=decrypt_files_by_filter)
+
+    # Add a command to encrypt files by filter
+    parser_encrypt_files = subparsers.add_parser('encrypt-files', help="Encrypt all files for a specified filter")
+    parser_encrypt_files.add_argument('filter_name', type=str, help="The filter name for which to encrypt files")
+    parser_encrypt_files.set_defaults(func=encrypt_files_by_filter)
 
     # Status command
     parser_status = subparsers.add_parser('status', help="List all filters and file statuses")
