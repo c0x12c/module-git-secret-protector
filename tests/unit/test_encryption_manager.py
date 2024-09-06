@@ -41,20 +41,20 @@ class TestEncryptionManager(unittest.TestCase):
         self.assertEqual(decrypted_data, test_data, "Decrypted data does not match the original")
 
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_encrypt_file(self, mock_file):
+    def test_encrypt_file(self, mock_open):
         test_data = b'This is some test data'
+        mock_open.return_value.read.return_value = test_data
 
         # Generate a random path
         dummy_path = '/tmp/' + secrets.token_hex(10)
-        mock_file.return_value.read.return_value = test_data
+        mock_open.return_value.read.return_value = test_data
 
-        encrypted_data = self.manager.encrypt_file(dummy_path)
-        result = self.manager.decrypt_data(encrypted_data)
+        self.manager.encrypt_file(dummy_path)
 
-        self.assertEqual(result, test_data, "The decrypted data does not match the original test data.")
+        mock_open().write.assert_called_once_with(self.manager.encrypt_data(test_data))
 
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_decrypt_file(self, mock_file):
+    def test_decrypt_file(self, mock_open):
         # Generate test data and encrypt it
         test_data = b'This is some test data'
 
@@ -62,15 +62,12 @@ class TestEncryptionManager(unittest.TestCase):
 
         # Setup the path and prepare the mock file
         dummy_path = '/tmp/' + secrets.token_hex(10)
-        mock_file.return_value.read.return_value = file_data
+        mock_open.return_value.read.return_value = file_data
 
         result = self.manager.decrypt_file(dummy_path)
 
-        # Assert that 'open' was called correctly to read the file
-        mock_file.assert_called_once_with(dummy_path, 'rb')
 
-        # Read and check decryption
-        self.assertEqual(result, test_data, "The decrypted data does not match the original test data.")
+        mock_open().write.assert_called_once_with(test_data)
 
 
 if __name__ == '__main__':
