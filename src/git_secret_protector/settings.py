@@ -19,6 +19,7 @@ class Settings:
     log_level: str = 'INFO'
     log_max_size: int = 10485760  # 10MB
     log_backup_count: int = 3
+    magic_header: str = 'ENCRYPTED'
     config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
@@ -49,6 +50,7 @@ class Settings:
             self.log_level = self.config.get('DEFAULT', 'log_level', fallback=self.log_level)
             self.log_max_size = self.config.getint('DEFAULT', 'log_max_size', fallback=self.log_max_size)
             self.log_backup_count = self.config.getint('DEFAULT', 'log_backup_count', fallback=self.log_backup_count)
+            self.magic_header = self.config.get('DEFAULT', 'magic_header', fallback=self.magic_header)
 
     @classmethod
     def get_instance(cls):
