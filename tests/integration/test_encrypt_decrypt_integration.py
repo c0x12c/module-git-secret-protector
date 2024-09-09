@@ -1,10 +1,12 @@
+import configparser
 import logging
 import os
 import subprocess
 import tempfile
 import unittest
-from git_secret_protector.encryption_manager import EncryptionManager
+
 from git_secret_protector.aes_key_manager import AesKeyManager
+from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.git_attributes_parser import GitAttributesParser
 
 
@@ -14,6 +16,8 @@ class TestGitSecretProtectorIntegration(unittest.TestCase):
         # Create a temporary directory to initialize a git repository
         self.test_dir = tempfile.TemporaryDirectory()
         self.repo_dir = self.test_dir.name
+        self.module_dir = os.path.join(self.repo_dir, '.git_secret_protector')
+        os.makedirs(self.module_dir, exist_ok=True)
 
         # Initialize a git repository
         subprocess.run(['git', 'init', self.repo_dir], check=True)
@@ -48,12 +52,20 @@ config/*.conf filter=configfilter
         subprocess.run(['git', 'add', '.'], check=True)
         subprocess.run(['git', 'commit', '-m', 'Add sample files'], check=True)
 
-        # Instantiate the key manager and setup AES key and IV for encryption
+        # Create a config.ini file in the module directory
+        config = configparser.ConfigParser()
+        config['DEFAULT'] = {
+            'module_name': 'git-secret-protector-test',
+            'cache_dir': '.git_secret_protector/cache',
+            'log_file': '.git_secret_protector/logs/git_secret_protector.log'
+        }
+        with open(os.path.join(self.module_dir, 'config.ini'), 'w') as configfile:
+            config.write(configfile)
+
         self.aes_key_manager = AesKeyManager()
-        filter_name = 'secretfilter'
-        self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
     def tearDown(self):
+        print('Cleaning up')
         # Clean up the temporary directory after the test
         os.chdir('/')
         self.test_dir.cleanup()
@@ -61,23 +73,23 @@ config/*.conf filter=configfilter
         # Clean up AES key and IV from SSM
         try:
             print('Clean SSM parameters for filter: secretfilter')
-            # self.aes_key_manager.destroy_aes_key_and_iv('secretfilter')
+            self.aes_key_manager.destroy_aes_key_and_iv('secretfilter')
         except Exception as e:
             logging.error(f"Error during cleanup of SSM parameters: {e}")
 
     def test_encryption_and_decryption(self):
-        # Instantiate the key manager and generate a key and IV
-        aes_key_manager = AesKeyManager()
         filter_name = 'secretfilter'
+        self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
-        aes_key, iv = aes_key_manager.retrieve_key_and_iv(filter_name)
+        aes_key, iv = self.aes_key_manager.retrieve_key_and_iv(filter_name)
 
         # Instantiate the encryption manager
         git_attributes_parser = GitAttributesParser()
-        encryption_manager = EncryptionManager(aes_key, iv, git_attributes_parser)
+        files_to_encrypt = git_attributes_parser.get_files_for_filter(filter_name=filter_name)
 
-        # Encrypt the files
-        encryption_manager.encrypt(filter_name=filter_name)
+        # Encrypt the files,'
+        encryption_manager = AesEncryptionHandler(aes_key, iv)
+        encryption_manager.encrypt_files(files=files_to_encrypt)
 
         # Verify that 'secrets/file1.secret' file is encrypted
         with open('secrets/file1.secret', 'rb') as f:
@@ -90,7 +102,7 @@ config/*.conf filter=configfilter
             self.assertFalse(data.startswith(b'ENCRYPTED'), f"File config/app.conf should not be encrypted.")
 
         # Decrypt the files
-        encryption_manager.decrypt(filter_name=filter_name)
+        encryption_manager.decrypt_files(files_to_encrypt)
 
         # Verify that files are decrypted to their original content
         for filename, original_content in self.sample_files.items():

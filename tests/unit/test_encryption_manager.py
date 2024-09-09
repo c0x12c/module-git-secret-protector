@@ -1,12 +1,14 @@
-import unittest
-from unittest.mock import patch, MagicMock
 import base64
 import secrets
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+import unittest
+from unittest.mock import patch, MagicMock
 
-from git_secret_protector.encryption_manager import EncryptionManager, MAGIC_HEADER
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.git_attributes_parser import GitAttributesParser
+from git_secret_protector.settings import get_settings
 
 
 class TestEncryptionManager(unittest.TestCase):
@@ -20,8 +22,7 @@ class TestEncryptionManager(unittest.TestCase):
         self.mock_git_attributes_parser.get_files_for_filter.return_value = ['file1.txt', 'file2.txt']
 
         # Instantiate EncryptionManager with the mocked GitAttributesParser
-        self.manager = EncryptionManager(aes_key=self.aes_key, iv=self.iv,
-                                         git_attributes_parser=self.mock_git_attributes_parser)
+        self.manager = AesEncryptionHandler(aes_key=self.aes_key, iv=self.iv)
 
         # Create a cipher instance for use in tests
         self.cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
@@ -34,7 +35,7 @@ class TestEncryptionManager(unittest.TestCase):
         encrypted_data_base64 = base64.b64encode(encrypted_data)
 
         # Prepare data with MAGIC_HEADER
-        data_with_header = MAGIC_HEADER + encrypted_data_base64
+        data_with_header = get_settings().magic_header.encode() + encrypted_data_base64
 
         # Test normal decryption
         decrypted_data = self.manager.decrypt_data(data_with_header)

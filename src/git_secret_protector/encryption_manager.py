@@ -1,98 +1,123 @@
-import base64
 import logging
-import os
+import subprocess
+import sys
 
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-
+from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.aes_key_manager import AesKeyManager
 from git_secret_protector.git_attributes_parser import GitAttributesParser
+from git_secret_protector.key_rotator import KeyRotator
 
 logger = logging.getLogger(__name__)
-MAGIC_HEADER = b'ENCRYPTED'  # Magic header to identify encrypted files
 
 
 class EncryptionManager:
-    def __init__(self, aes_key, iv, git_attributes_parser):
-        if aes_key is None or iv is None:
-            raise ValueError("AES key and IV must not be None")
-        self.aes_key = aes_key
-        self.iv = iv
-        self.git_attributes_parser = git_attributes_parser
+    def __init__(self):
+        self.git_attributes_parser = GitAttributesParser()
+        self.key_manager = AesKeyManager()
+        self.key_rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
 
-    def encrypt_data(self, data):
-        return self._perform_encryption(data)
+    def get_encryption_handler(self, filter_name: str):
+        aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+        return AesEncryptionHandler(aes_key, iv)
 
-    def decrypt_data(self, data):
-        return self._perform_decryption(data)
+    def setup_aes_key(self, filter_name: str):
+        self.key_manager.setup_aes_key_and_iv(filter_name)
 
-    def encrypt(self, filter_name):
+    def init_filter(self, filter_name: str):
+        # Check for existing Git filters
+        check_clean = subprocess.getoutput(f'git config --get filter.{filter_name}.clean')
+        check_smudge = subprocess.getoutput(f'git config --get filter.{filter_name}.smudge')
+
+        logger.info("Setting up Git filters for '%s'", filter_name)
+        if check_clean or check_smudge:
+            sys.stdout.buffer.write(f"Git filters for '{filter_name}' already exist. Skipping filter setup.".encode())
+            sys.stdout.buffer.flush()
+            return
+
+        # Set Git filters
+        subprocess.run(['git', 'config', f'filter.{filter_name}.clean', 'git-secret-protector encrypt %f'], check=True)
+        subprocess.run(['git', 'config', f'filter.{filter_name}.smudge', 'git-secret-protector decrypt %f'], check=True)
+        subprocess.run(['git', 'config', f'filter.{filter_name}.required', 'true'], check=True)
+        logger.debug("Git clean & smudge filters for '%s' have been set up successfully.", filter_name)
+
+    def pull_aes_key(self, filter_name: str):
+        self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
+        logger.info("AES key pulled and cached for filter: %s", filter_name)
+
+    def encrypt_files(self, filter_name: str):
         files_to_encrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
+        if not files_to_encrypt:
+            logging.info(f"No files to encrypt for filter: {filter_name}")
+            return
 
-        for file_path in files_to_encrypt:
-            self.encrypt_file(file_path)
+        self.get_encryption_handler(filter_name=filter_name).encrypt_files(files=files_to_encrypt)
+        logging.info(f"All files encrypted for filter: {filter_name}")
 
-    def decrypt(self, filter_name):
+    def decrypt_files(self, filter_name: str):
         files_to_decrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
+        if not files_to_decrypt:
+            logging.info(f"No files to decrypt for filter: {filter_name}")
+            return
 
-        for file_path in files_to_decrypt:
-            self.decrypt_file(file_path)
+        self.get_encryption_handler(filter_name=filter_name).decrypt_files(files=files_to_decrypt)
+        logging.info(f"All files decrypted for filter: {filter_name}")
 
-    def encrypt_file(self, file_path):
-        with open(file_path, 'rb') as f:
-            plain_data = f.read()
+    def encrypt_stdin(self, file_name):
+        logging.info(f"Encrypting data from stdin for file: {file_name}")
+        input_data = sys.stdin.buffer.read()
 
-        encrypted_data = self._perform_encryption(plain_data)
-        with open(file_path, 'wb') as f:
-            f.write(encrypted_data)
-        logger.info("File encrypted and overwritten: %s", file_path)
+        if not input_data:
+            logging.error("No data provided on stdin")
+            return
 
-    def decrypt_file(self, file_path):
-        logger.info("Decrypting file: %s", file_path)
-        with open(os.path.abspath(file_path), 'rb') as f:
-            data = f.read()
+        git_attributes_parser = GitAttributesParser()
+        filter_name = git_attributes_parser.get_filter_name_for_file(file_name=file_name)
+        logger.debug("Found filter_name to decrypt: %s", filter_name)
 
-        plaintext = self._perform_decryption(data)
+        if filter_name is None:
+            logger.error("No filter found for file: %s", file_name)
+            return
 
-        # Write the decrypted data back to the file
-        with open(file_path, 'wb') as f:
-            f.write(plaintext)
+        encrypted_data = self.get_encryption_handler(filter_name=filter_name).encrypt_data(input_data)
 
-        logger.debug("Successfully decrypted and wrote back to: %s", file_path)
+        sys.stdout.buffer.write(encrypted_data)
+        sys.stdout.buffer.flush()
 
-    def _perform_encryption(self, data: bytes) -> bytes:
-        if data.startswith(MAGIC_HEADER):
-            logger.warning("Data already contains MAGIC_HEADER. Skipping encryption.")
-            return data
+    def decrypt_stdin(self, file_name):
+        logging.info(f"Decrypting data from stdin for file: {file_name}")
+        encrypted_data = sys.stdin.buffer.read()
 
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
-        ciphertext = cipher.encrypt(pad(data, AES.block_size))
-        return MAGIC_HEADER + base64.b64encode(ciphertext)  # Base64 encode the result
+        if not encrypted_data:
+            logging.error("No data provided on stdin")
+            return
 
-    def _perform_decryption(self, data: bytes) -> bytes:
-        if not data.startswith(MAGIC_HEADER):
-            logger.warning("Data does not start with MAGIC HEADER. Skipping decryption.")
-            return data
+        git_attributes_parser = GitAttributesParser()
+        filter_name = git_attributes_parser.get_filter_name_for_file(file_name)
+        logger.debug("Found filter_name to decrypt: %s", filter_name)
 
-        encrypted_data = data[len(MAGIC_HEADER):]
+        if filter_name is None:
+            logger.error("No filter found for file: %s", file_name)
+            return
 
-        ciphertext = base64.b64decode(encrypted_data)
-        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
-        plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
-        return plaintext
+        decrypted_data = self.get_encryption_handler(filter_name=filter_name).decrypt_data(encrypted_data)
 
-    @classmethod
-    def from_filter_name(cls, filter_name: str, git_attributes_parser: GitAttributesParser):
-        key_manager = AesKeyManager()
-        aes_key, iv = key_manager.retrieve_key_and_iv(filter_name)
-        return cls(aes_key, iv, git_attributes_parser)
+        sys.stdout.buffer.write(decrypted_data)
+        sys.stdout.buffer.flush()
 
-    @staticmethod
-    def is_encrypted(file_path):
-        try:
-            with open(file_path, 'rb') as file:
-                header = file.read(len(MAGIC_HEADER))
-                return header == MAGIC_HEADER
-        except IOError:
-            logger.error(f"Error reading file: {file_path}")
-            return False
+    def rotate_keys(self, filter_name: str):
+        rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
+        rotator.rotate_key(filter_name)
+        logger.info("Key rotation complete for filter: %s", filter_name)
+
+    def status(self):
+        filter_names = self.git_attributes_parser.get_filter_names()
+        for filter_name in filter_names:
+            print(f"Filter: {filter_name}")
+            files = self.git_attributes_parser.get_files_for_filter(filter_name)
+            if files:
+                for file in files:
+                    encrypted = self.get_encryption_handler(filter_name=filter_name).is_encrypted(file)
+                    status = "Encrypted" if encrypted else "Decrypted"
+                    print(f"  {file}: {status}")
+            else:
+                print("  No files found for this filter.")
