@@ -1,7 +1,8 @@
 import logging
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.git_attributes_parser import GitAttributesParser
-from git_secret_protector.aes_key_manager import AesKeyManager
+
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 
 logger = logging.getLogger(__name__)
 

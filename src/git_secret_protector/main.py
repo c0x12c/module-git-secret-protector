@@ -3,9 +3,9 @@ import configparser
 import logging
 from pathlib import Path
 
-from git_secret_protector.encryption_manager import EncryptionManager
-from git_secret_protector.logging import configure_logging
-from git_secret_protector.settings import get_settings
+from git_secret_protector.core.settings import get_settings
+from git_secret_protector.services.encryption_manager import EncryptionManager
+from git_secret_protector.utils.configure_logging import configure_logging
 
 logger = logging.getLogger(__name__)
 

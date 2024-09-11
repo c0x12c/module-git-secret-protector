@@ -6,9 +6,9 @@ from unittest.mock import patch, MagicMock
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.git_attributes_parser import GitAttributesParser
-from git_secret_protector.settings import get_settings
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.settings import get_settings
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 
 
 class TestEncryptionManager(unittest.TestCase):

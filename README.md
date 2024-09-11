@@ -24,7 +24,7 @@ pipx install git-secret-protector
 
 ## Usage
 
-### 1. Initial Setup
+### 1. Initial Setup for Repositories Owners
 
 #### Set up AES key
 

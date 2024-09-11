@@ -5,7 +5,7 @@ import os
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
-from git_secret_protector.settings import get_settings
+from git_secret_protector.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

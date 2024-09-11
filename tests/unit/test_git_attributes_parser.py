@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, mock_open
-from git_secret_protector.git_attributes_parser import GitAttributesParser
+
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 
 
 class TestGitAttributesParser(unittest.TestCase):
@@ -52,7 +53,7 @@ database/*.sql filter=sqlfilter
 
     def test_get_secret_files(self):
         with patch('builtins.open', self.m_open), \
-                patch('git_secret_protector.git_attributes_parser.GitAttributesParser._find_files_matching_patterns',
+                patch('git_secret_protector.core.git_attributes_parser.GitAttributesParser._find_files_matching_patterns',
                       return_value=['/fake/repo/config/app.conf', '/fake/repo/database/test.sql']):
             parser = GitAttributesParser()
             secret_files = parser.get_secret_files()

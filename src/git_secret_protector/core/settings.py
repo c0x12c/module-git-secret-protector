@@ -1,6 +1,12 @@
 import configparser
 import os
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class StorageType(Enum):
+    AWS_SSM = 'AWS_SSM'
+    GCP_SECRET = 'GCP_SECRET'
 
 
 @dataclass
@@ -20,6 +26,7 @@ class Settings:
     log_max_size: int = 10485760  # 10MB
     log_backup_count: int = 3
     magic_header: str = 'ENCRYPTED'
+    storage_type: StorageType = StorageType.AWS_SSM
     config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
@@ -51,6 +58,12 @@ class Settings:
             self.log_max_size = self.config.getint('DEFAULT', 'log_max_size', fallback=self.log_max_size)
             self.log_backup_count = self.config.getint('DEFAULT', 'log_backup_count', fallback=self.log_backup_count)
             self.magic_header = self.config.get('DEFAULT', 'magic_header', fallback=self.magic_header)
+
+            storage_type_str = self.config.get('DEFAULT', 'storage_type', fallback=self.storage_type.value)
+            if storage_type_str in [member.value for member in StorageType]:
+                self.storage_type = StorageType(storage_type_str)
+            else:
+                raise ValueError(f"Invalid storage_type value: {storage_type_str}")
 
     @classmethod
     def get_instance(cls):

@@ -8,12 +8,12 @@ from unittest.mock import patch, MagicMock
 
 from botocore.exceptions import ClientError
 
-from git_secret_protector.aes_key_manager import AesKeyManager
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 
 
 class TestAesKeyManager(unittest.TestCase):
 
-    @patch('git_secret_protector.aes_key_manager.get_settings')
+    @patch('git_secret_protector.crypto.aes_key_manager.get_settings')
     @patch('boto3.client')
     def setUp(self, mock_boto_client, mock_get_settings):
         self.mock_settings = MagicMock()

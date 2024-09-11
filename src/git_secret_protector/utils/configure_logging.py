@@ -1,8 +1,7 @@
-import logging
-import logging.handlers
 import os
 
-from git_secret_protector.settings import get_settings
+import logging
+from git_secret_protector.core.settings import get_settings
 
 
 def configure_logging():

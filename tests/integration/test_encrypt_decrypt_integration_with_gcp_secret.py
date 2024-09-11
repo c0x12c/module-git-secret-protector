@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 import unittest
 
-from git_secret_protector.aes_key_manager import AesKeyManager
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.settings import StorageType
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 
 
-class TestGitSecretProtectorIntegration(unittest.TestCase):
+class TestGitSecretProtectorIntegrationWithGcpSecret(unittest.TestCase):
 
     def setUp(self):
         # Create a temporary directory to initialize a git repository
@@ -57,7 +58,8 @@ config/*.conf filter=configfilter
         config['DEFAULT'] = {
             'module_name': 'git-secret-protector-test',
             'cache_dir': '.git_secret_protector/cache',
-            'log_file': '.git_secret_protector/logs/git_secret_protector.log'
+            'log_file': '.git_secret_protector/logs/git_secret_protector.log',
+            'storage_type': StorageType.GCP_SECRET.value
         }
         with open(os.path.join(self.module_dir, 'config.ini'), 'w') as configfile:
             config.write(configfile)
@@ -70,12 +72,12 @@ config/*.conf filter=configfilter
         os.chdir('/')
         self.test_dir.cleanup()
 
-        # Clean up AES key and IV from SSM
+        # Clean up AES key and IV from GCloud Secret
         try:
-            print('Clean SSM parameters for filter: secretfilter')
+            print('Clean GCloud Secret for filter: secretfilter')
             self.aes_key_manager.destroy_aes_key_and_iv('secretfilter')
         except Exception as e:
-            logging.error(f"Error during cleanup of SSM parameters: {e}")
+            logging.error(f"Error during cleanup of GCloud Secret: {e}")
 
     def test_encryption_and_decryption(self):
         filter_name = 'secretfilter'

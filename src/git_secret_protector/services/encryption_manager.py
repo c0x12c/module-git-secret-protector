@@ -2,12 +2,11 @@ import logging
 import subprocess
 import sys
 
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.aes_key_manager import AesKeyManager
-from git_secret_protector.git_attributes_parser import GitAttributesParser
-from git_secret_protector.key_rotator import KeyRotator
-
-logger = logging.getLogger(__name__)
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.main import logger
+from git_secret_protector.services.key_rotator import KeyRotator
 
 
 class EncryptionManager:
