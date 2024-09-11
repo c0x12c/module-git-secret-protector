@@ -121,3 +121,8 @@ See [CHANGELOG.md](CHANGELOG.md) for a history of changes and updates.
 ## Support
 
 If you encounter any issues or have any questions, please open an issue on the GitHub repository or reach out to our support team.
+
+## Contributors
+
+<!-- readme: collaborators,contributors -start -->
+<!-- readme: collaborators,contributors -end -->
