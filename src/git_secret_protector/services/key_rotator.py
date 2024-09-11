@@ -1,5 +1,7 @@
 import logging
 
+import injector
+
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
@@ -8,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class KeyRotator:
+    @injector.inject
     def __init__(self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser):
         self.aes_key_manager = key_manager
         self.git_attributes_parser = git_attributes_parser

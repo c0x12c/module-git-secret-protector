@@ -1,6 +1,7 @@
+import logging
+import logging.handlers
 import os
 
-import logging
 from git_secret_protector.core.settings import get_settings
 
 

@@ -7,7 +7,6 @@ from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 class TestGitAttributesParser(unittest.TestCase):
 
     def setUp(self):
-        # Extended content with two different filters
         self.attributes_content = """
 # Sample .gitattributes data for multiple filters
 *.secret filter=secretfilter
@@ -15,7 +14,6 @@ config/*.conf filter=configfilter
 *.data filter=datafilter
 database/*.sql filter=sqlfilter
         """
-        # Initialize mock_open with the extended attributes content
         self.m_open = mock_open(read_data=self.attributes_content)
 
     def test_parse_patterns(self):
