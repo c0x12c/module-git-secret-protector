@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [Unreleased]
+
+### Added
+- Added support for storing AES data keys in GCP Secret Manager.
+
 ## [0.4.0] - 2024-09-05
+
+### Added
 - Add a `encrypt-files` command to encrypt all files under a specific filter.
 
 ## [0.3.0] - 2024-09-05

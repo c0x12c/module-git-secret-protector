@@ -3,13 +3,17 @@ import configparser
 import logging
 from pathlib import Path
 
-from git_secret_protector.encryption_manager import EncryptionManager
-from git_secret_protector.logging import configure_logging
-from git_secret_protector.settings import get_settings
+from git_secret_protector.context.module import GitSecretProtectorModule
+from git_secret_protector.core.settings import get_settings
+from git_secret_protector.services.encryption_manager import EncryptionManager
+from git_secret_protector.utils.configure_logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
 MODULE_FOLDER = '.git_secret_protector'
+
+inj = GitSecretProtectorModule.get_injector()
+manager = inj.get(EncryptionManager)
 
 
 def init_module_folder():
@@ -40,7 +44,6 @@ def setup_aes_key(args):
 
     init_module_folder()
 
-    manager = EncryptionManager()
     manager.setup_aes_key(filter_name=filter_name)
     logger.info(f"Filters for '{filter_name}' have been set up successfully.")
 
@@ -51,7 +54,6 @@ def init_filter(args):
 
     init_module_folder()
 
-    manager = EncryptionManager()
     manager.init_filter(filter_name=filter_name)
 
 
@@ -61,42 +63,35 @@ def pull_aes_key(args):
 
     init_module_folder()
 
-    manager = EncryptionManager()
     manager.pull_aes_key(filter_name=filter_name)
 
 
 def rotate_key(args):
     filter_name = args.filter_name
-    manager = EncryptionManager()
     manager.rotate_keys(filter_name=filter_name)
 
 
 def decrypt_stdin(args):
     file_name = args.file_name
-    manager = EncryptionManager()
     manager.decrypt_stdin(file_name=file_name)
 
 
 def encrypt_stdin(args):
     file_name = args.file_name
-    manager = EncryptionManager()
     manager.encrypt_stdin(file_name=file_name)
 
 
 def decrypt_files_by_filter(args):
     filter_name = args.filter_name
-    manager = EncryptionManager()
     manager.decrypt_files(filter_name=filter_name)
 
 
 def encrypt_files_by_filter(args):
     filter_name = args.filter_name
-    manager = EncryptionManager()
     manager.encrypt_files(filter_name=filter_name)
 
 
 def status_command(_):
-    manager = EncryptionManager()  # Assuming None or a default filter if global status is needed
     manager.status()
 
 
@@ -129,7 +124,6 @@ def main():
         parser_cmd = subparsers.add_parser(cmd_name, help=help_text)
         parser_cmd.add_argument('filter_name', type=str, nargs='?', help="The filter name")
         parser_cmd.set_defaults(func=func)
-
 
     # Status command
     parser_status = subparsers.add_parser('status', help="List all filters and file statuses")

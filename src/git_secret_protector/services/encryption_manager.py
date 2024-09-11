@@ -2,19 +2,22 @@ import logging
 import subprocess
 import sys
 
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.aes_key_manager import AesKeyManager
-from git_secret_protector.git_attributes_parser import GitAttributesParser
-from git_secret_protector.key_rotator import KeyRotator
+import injector
+
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.services.key_rotator import KeyRotator
 
 logger = logging.getLogger(__name__)
 
 
 class EncryptionManager:
-    def __init__(self):
-        self.git_attributes_parser = GitAttributesParser()
-        self.key_manager = AesKeyManager()
-        self.key_rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
+    @injector.inject
+    def __init__(self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser, key_rotator: KeyRotator):
+        self.git_attributes_parser = git_attributes_parser
+        self.key_manager = key_manager
+        self.key_rotator = key_rotator
 
     def get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)

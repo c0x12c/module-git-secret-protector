@@ -4,7 +4,7 @@ import logging
 import os
 import re
 
-from git_secret_protector.settings import get_settings
+from git_secret_protector.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

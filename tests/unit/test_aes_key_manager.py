@@ -8,22 +8,25 @@ from unittest.mock import patch, MagicMock
 
 from botocore.exceptions import ClientError
 
-from git_secret_protector.aes_key_manager import AesKeyManager
+from git_secret_protector.core.settings import StorageType
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 
 
 class TestAesKeyManager(unittest.TestCase):
 
-    @patch('git_secret_protector.aes_key_manager.get_settings')
-    @patch('boto3.client')
-    def setUp(self, mock_boto_client, mock_get_settings):
+    @patch('git_secret_protector.crypto.aes_key_manager.get_settings')
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def setUp(self, mock_create, mock_get_settings):
         self.mock_settings = MagicMock()
         self.mock_temp_dir = tempfile.TemporaryDirectory()
         self.mock_settings.cache_dir = self.mock_temp_dir.name
         self.mock_settings.module_name = secrets.token_hex(8)
+        self.mock_settings.storage_type = StorageType.AWS_SSM
+
         mock_get_settings.return_value = self.mock_settings
 
-        self.mock_ssm_client = MagicMock()
-        mock_boto_client.return_value = self.mock_ssm_client
+        self.mock_storage_manager = MagicMock()
+        mock_create.return_value = self.mock_storage_manager
 
         self.aes_key_manager = AesKeyManager()
 
@@ -70,16 +73,22 @@ class TestAesKeyManager(unittest.TestCase):
         self.assertEqual(iv, base64.b64decode(data['iv']))
 
     @patch('os.path.exists', return_value=False)
-    @patch('boto3.client')
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_retrieve_key_and_iv_from_cache_miss(self, mock_open, mock_boto_client, mock_exists):
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def test_retrieve_key_and_iv_from_cache_miss(self, mock_create, mock_open, mock_exists):
+        mock_create.return_value = self.mock_storage_manager
+        self.mock_storage_manager.parameter_name.return_value = secrets.token_hex(8)
+
         json_data = self.random_encoded_data()
         filter_name = secrets.token_hex(8)
-        mock_boto_client.return_value.get_parameter.return_value = {'Parameter': {'Value': json_data}}
+        self.mock_storage_manager.retrieve.return_value = json_data
 
         aes_key, iv = self.aes_key_manager.retrieve_key_and_iv(filter_name)
 
-        mock_boto_client.return_value.get_parameter.assert_called_once()
+        mock_open.assert_called_once_with(self.aes_key_manager._cache_path(filter_name=filter_name), 'w')
+        handle = mock_open()
+        handle.write.assert_called_once_with(json_data)
+
         data = json.loads(json_data)
         self.assertEqual(aes_key, base64.b64decode(data['aes_key']))
         self.assertEqual(iv, base64.b64decode(data['iv']))
@@ -91,7 +100,7 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
 
-        mock_open.assert_called_once_with(os.path.join(self.mock_temp_dir.name, f'{filter_name}_key_iv.json'), 'w')
+        mock_open.assert_called_once_with(self.aes_key_manager._cache_path(filter_name=filter_name), 'w')
         handle = mock_open()
         handle.write.assert_called_once_with(json_data)
 

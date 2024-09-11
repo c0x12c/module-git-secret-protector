@@ -1,12 +1,12 @@
 import unittest
 from unittest.mock import patch, mock_open
-from git_secret_protector.git_attributes_parser import GitAttributesParser
+
+from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 
 
 class TestGitAttributesParser(unittest.TestCase):
 
     def setUp(self):
-        # Extended content with two different filters
         self.attributes_content = """
 # Sample .gitattributes data for multiple filters
 *.secret filter=secretfilter
@@ -14,7 +14,6 @@ config/*.conf filter=configfilter
 *.data filter=datafilter
 database/*.sql filter=sqlfilter
         """
-        # Initialize mock_open with the extended attributes content
         self.m_open = mock_open(read_data=self.attributes_content)
 
     def test_parse_patterns(self):
@@ -52,7 +51,7 @@ database/*.sql filter=sqlfilter
 
     def test_get_secret_files(self):
         with patch('builtins.open', self.m_open), \
-                patch('git_secret_protector.git_attributes_parser.GitAttributesParser._find_files_matching_patterns',
+                patch('git_secret_protector.core.git_attributes_parser.GitAttributesParser._find_files_matching_patterns',
                       return_value=['/fake/repo/config/app.conf', '/fake/repo/database/test.sql']):
             parser = GitAttributesParser()
             secret_files = parser.get_secret_files()

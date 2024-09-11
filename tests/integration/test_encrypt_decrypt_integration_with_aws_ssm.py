@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 import unittest
 
-from git_secret_protector.aes_key_manager import AesKeyManager
-from git_secret_protector.aes_encryption_handler import AesEncryptionHandler
-from git_secret_protector.git_attributes_parser import GitAttributesParser
+from git_secret_protector.context.module import GitSecretProtectorModule
+from git_secret_protector.core.settings import StorageType
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.services.encryption_manager import EncryptionManager
 
 
-class TestGitSecretProtectorIntegration(unittest.TestCase):
+class TestGitSecretProtectorIntegrationWithAwsSsm(unittest.TestCase):
 
     def setUp(self):
         # Create a temporary directory to initialize a git repository
@@ -57,12 +58,15 @@ config/*.conf filter=configfilter
         config['DEFAULT'] = {
             'module_name': 'git-secret-protector-test',
             'cache_dir': '.git_secret_protector/cache',
-            'log_file': '.git_secret_protector/logs/git_secret_protector.log'
+            'log_file': '.git_secret_protector/logs/git_secret_protector.log',
+            'storage_type': StorageType.AWS_SSM.value
         }
         with open(os.path.join(self.module_dir, 'config.ini'), 'w') as configfile:
             config.write(configfile)
 
-        self.aes_key_manager = AesKeyManager()
+        module_injector = GitSecretProtectorModule.get_injector()
+        self.encryption_manager = module_injector.get(EncryptionManager)
+        self.aes_key_manager = module_injector.get(AesKeyManager)
 
     def tearDown(self):
         print('Cleaning up')
@@ -79,17 +83,8 @@ config/*.conf filter=configfilter
 
     def test_encryption_and_decryption(self):
         filter_name = 'secretfilter'
-        self.aes_key_manager.setup_aes_key_and_iv(filter_name)
-
-        aes_key, iv = self.aes_key_manager.retrieve_key_and_iv(filter_name)
-
-        # Instantiate the encryption manager
-        git_attributes_parser = GitAttributesParser()
-        files_to_encrypt = git_attributes_parser.get_files_for_filter(filter_name=filter_name)
-
-        # Encrypt the files,'
-        encryption_manager = AesEncryptionHandler(aes_key, iv)
-        encryption_manager.encrypt_files(files=files_to_encrypt)
+        self.encryption_manager.setup_aes_key(filter_name)
+        self.encryption_manager.encrypt_files(filter_name=filter_name)
 
         # Verify that 'secrets/file1.secret' file is encrypted
         with open('secrets/file1.secret', 'rb') as f:
@@ -102,7 +97,7 @@ config/*.conf filter=configfilter
             self.assertFalse(data.startswith(b'ENCRYPTED'), f"File config/app.conf should not be encrypted.")
 
         # Decrypt the files
-        encryption_manager.decrypt_files(files_to_encrypt)
+        self.encryption_manager.decrypt_files(filter_name=filter_name)
 
         # Verify that files are decrypted to their original content
         for filename, original_content in self.sample_files.items():
