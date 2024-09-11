@@ -5,6 +5,7 @@ import sys
 import injector
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.settings import get_settings
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.services.key_rotator import KeyRotator
@@ -14,17 +15,28 @@ logger = logging.getLogger(__name__)
 
 class EncryptionManager:
     @injector.inject
-    def __init__(self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser, key_rotator: KeyRotator):
+    def __init__(
+            self,
+            git_attributes_parser: GitAttributesParser,
+            key_manager: AesKeyManager,
+            key_rotator: KeyRotator
+    ):
         self.git_attributes_parser = git_attributes_parser
         self.key_manager = key_manager
         self.key_rotator = key_rotator
+        self.magic_header = get_settings().magic_header.encode()
 
     def get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
-        return AesEncryptionHandler(aes_key, iv)
+        return AesEncryptionHandler(aes_key, iv, self.magic_header)
 
     def setup_aes_key(self, filter_name: str):
         self.key_manager.setup_aes_key_and_iv(filter_name)
+
+    def setup_filters(self):
+        filter_names = self.git_attributes_parser.get_filter_names()
+        for filter_name in filter_names:
+            self.init_filter(filter_name)
 
     def init_filter(self, filter_name: str):
         # Check for existing Git filters
@@ -33,7 +45,8 @@ class EncryptionManager:
 
         logger.info("Setting up Git filters for '%s'", filter_name)
         if check_clean or check_smudge:
-            sys.stdout.buffer.write(f"Git filters for '{filter_name}' already exist. Skipping filter setup.".encode())
+            sys.stdout.buffer.write(
+                f"Git filters for '{filter_name}' already exist. Skipping filter setup.".encode('utf-8') + b'\n')
             sys.stdout.buffer.flush()
             return
 
@@ -119,8 +132,17 @@ class EncryptionManager:
             files = self.git_attributes_parser.get_files_for_filter(filter_name)
             if files:
                 for file in files:
-                    encrypted = self.get_encryption_handler(filter_name=filter_name).is_encrypted(file)
+                    encrypted = self._is_encrypted(file_path=file)
                     status = "Encrypted" if encrypted else "Decrypted"
                     print(f"  {file}: {status}")
             else:
                 print("  No files found for this filter.")
+
+    def _is_encrypted(self, file_path: str):
+        try:
+            with open(file_path, 'rb') as file:
+                header = file.read(len(self.magic_header))
+                return header == self.magic_header
+        except IOError:
+            logger.error(f"Error reading file: {file_path}")
+            return False

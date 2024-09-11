@@ -31,7 +31,7 @@ def init_module_folder():
         config['DEFAULT'] = {
             'module_name': 'git-secret-protector',
             'log_level': 'WARN',
-            'log_max_size': '10485760'  # 10MB
+            'log_max_size': '1048576'  # 10MB
         }
 
         with open(config_file, 'w') as configfile:
@@ -41,29 +41,20 @@ def init_module_folder():
 def setup_aes_key(args):
     filter_name = args.filter_name
     logger.info("Set up AES key for filter: %s", filter_name)
-
-    init_module_folder()
-
     manager.setup_aes_key(filter_name=filter_name)
     logger.info(f"Filters for '{filter_name}' have been set up successfully.")
 
 
-def init_filter(args):
-    filter_name = args.filter_name
-    logger.info("Initializing filter: %s", filter_name)
-
-    init_module_folder()
-
-    manager.init_filter(filter_name=filter_name)
+def setup_filters(args):
+    logger.info("Set up Git filters")
+    manager.setup_filters()
 
 
 def pull_aes_key(args):
     filter_name = args.filter_name
     logger.info("Pull AES key for filter: %s", filter_name)
-
-    init_module_folder()
-
     manager.pull_aes_key(filter_name=filter_name)
+    logger.info(f"Pull AES key for filter '{filter_name}' successfully.")
 
 
 def rotate_key(args):
@@ -96,19 +87,24 @@ def status_command(_):
 
 
 def main():
+    init_module_folder()
+
     configure_logging()
     parser = argparse.ArgumentParser(description="Git Secret Protector CLI")
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Add filter commands to the parser
     filter_commands = [
-        ('init', init_filter, "Init filter actions in git config"),
         ('setup-aes-key', setup_aes_key, "Set up AES key for a filter"),
         ('pull-aes-key', pull_aes_key, "Pull AES key for a filter"),
         ('rotate-key', rotate_key, "Rotate AES key and re-encrypt secrets"),
         ('decrypt-files', decrypt_files_by_filter, "Decrypt files for a specific filter"),
         ('encrypt-files', encrypt_files_by_filter, "Encrypt all files for a specified filter")
     ]
+
+    # Command to set up Git filters
+    parser_setup_filters_stdin = subparsers.add_parser('setup-filters', help="Set up Git filters in Git config")
+    parser_setup_filters_stdin.set_defaults(func=setup_filters)
 
     # Command to decrypt data from stdin
     parser_decrypt_stdin = subparsers.add_parser('decrypt', help="Decrypt data from stdin")

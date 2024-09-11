@@ -23,7 +23,7 @@ class Settings:
     module_name: str = 'git-secret-protector'
     log_file: str = field(init=False)
     log_level: str = 'INFO'
-    log_max_size: int = 10485760  # 10MB
+    log_max_size: int = 1048576  # 10MB
     log_backup_count: int = 3
     magic_header: str = 'ENCRYPTED'
     storage_type: StorageType = StorageType.AWS_SSM
