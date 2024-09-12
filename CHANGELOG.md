@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
-## [Unreleased]
+## [0.6.0] - 2024-09-12
 
 ### Added
 - Replace `init` command with `setup-filters` command to configure Git filters.
