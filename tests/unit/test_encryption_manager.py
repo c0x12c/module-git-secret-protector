@@ -7,22 +7,28 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
-from git_secret_protector.core.settings import get_settings
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from tests.utils.random_utils import generate_random_string
 
 
 class TestEncryptionManager(unittest.TestCase):
 
-    def setUp(self):
+    @patch('git_secret_protector.crypto.aes_key_manager.get_settings')
+    def setUp(self, mock_get_settings):
+        self.mock_settings = MagicMock()
+        self.magic_header = generate_random_string()
+        self.mock_settings.magic_header = self.magic_header
+        mock_get_settings.return_value = self.mock_settings
+
         self.aes_key = secrets.token_bytes(16)
         self.iv = secrets.token_bytes(AES.block_size)
 
+        self.manager = AesEncryptionHandler(aes_key=self.aes_key, iv=self.iv,
+                                            magic_header=self.mock_settings.magic_header.encode())
+        self.cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
+
         self.mock_git_attributes_parser = MagicMock(spec=GitAttributesParser)
         self.mock_git_attributes_parser.get_files_for_filter.return_value = ['file1.txt', 'file2.txt']
-
-        self.manager = AesEncryptionHandler(aes_key=self.aes_key, iv=self.iv)
-
-        self.cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
 
     def test_decrypt_data(self):
         test_data = secrets.token_bytes(128)  # Generating 128 bytes of random data
@@ -30,7 +36,7 @@ class TestEncryptionManager(unittest.TestCase):
         encrypted_data = self.cipher.encrypt(padded_data)
         encrypted_data_base64 = base64.b64encode(encrypted_data)
 
-        data_with_header = get_settings().magic_header.encode() + encrypted_data_base64
+        data_with_header = self.magic_header.encode() + encrypted_data_base64
 
         decrypted_data = self.manager.decrypt_data(data_with_header)
         self.assertEqual(decrypted_data, test_data, "Decrypted data does not match the original")

@@ -28,7 +28,7 @@ class EncryptionManager:
 
     def get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
-        return AesEncryptionHandler(aes_key, iv, self.magic_header)
+        return AesEncryptionHandler(aes_key=aes_key, iv=iv, magic_header=self.magic_header)
 
     def setup_aes_key(self, filter_name: str):
         self.key_manager.setup_aes_key_and_iv(filter_name)
@@ -36,7 +36,7 @@ class EncryptionManager:
     def setup_filters(self):
         filter_names = self.git_attributes_parser.get_filter_names()
         for filter_name in filter_names:
-            self.init_filter(filter_name)
+            self.init_filter(filter_name=filter_name)
 
     def init_filter(self, filter_name: str):
         # Check for existing Git filters
@@ -86,8 +86,7 @@ class EncryptionManager:
             logging.error("No data provided on stdin")
             return
 
-        git_attributes_parser = GitAttributesParser()
-        filter_name = git_attributes_parser.get_filter_name_for_file(file_name=file_name)
+        filter_name = self.git_attributes_parser.get_filter_name_for_file(file_name=file_name)
         logger.debug("Found filter_name to decrypt: %s", filter_name)
 
         if filter_name is None:
@@ -107,8 +106,7 @@ class EncryptionManager:
             logging.error("No data provided on stdin")
             return
 
-        git_attributes_parser = GitAttributesParser()
-        filter_name = git_attributes_parser.get_filter_name_for_file(file_name)
+        filter_name = self.git_attributes_parser.get_filter_name_for_file(file_name)
         logger.debug("Found filter_name to decrypt: %s", filter_name)
 
         if filter_name is None:

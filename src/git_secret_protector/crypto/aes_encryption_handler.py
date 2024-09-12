@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class AesEncryptionHandler:
-    def __init__(self, aes_key: str, iv: str, magic_header):
+    def __init__(self, aes_key: bytes, iv: bytes, magic_header: bytes):
         if aes_key is None or iv is None:
             raise ValueError("AES key and IV must not be None")
         self.aes_key = aes_key
