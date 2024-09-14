@@ -60,6 +60,7 @@ class AesKeyManager:
         try:
             local_data = self.load_key_iv_from_cache(filter_name=filter_name)
             if local_data:
+                logger.debug("Using locally cached AES key and IV for filter: %s", filter_name)
                 return base64.b64decode(local_data['aes_key']), base64.b64decode(local_data['iv'])
 
             parameter_name = self._parameter_name(filter_name=filter_name)

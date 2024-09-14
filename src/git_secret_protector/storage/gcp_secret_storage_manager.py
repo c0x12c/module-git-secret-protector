@@ -1,4 +1,5 @@
 import json
+import logging
 import subprocess
 
 from google.api_core.exceptions import NotFound, AlreadyExists, GoogleAPIError
@@ -6,6 +7,8 @@ from google.cloud import secretmanager
 from google.cloud.secretmanager_v1 import Secret, SecretPayload
 
 from git_secret_protector.storage.storage_manager_interface import StorageManagerInterface
+
+logger = logging.getLogger(__name__)
 
 
 class GcpSecretStorageManager(StorageManagerInterface):
@@ -64,6 +67,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
     def retrieve(self, name: str) -> str:
         secret_id = f"projects/{self.project_id}/secrets/{name}/versions/latest"
         try:
+            logger.info("Retrieving secret from GCP Secret Manager with ID: %s", secret_id)
             response = self.client.access_secret_version(name=secret_id)
             return response.payload.data.decode("UTF-8")
         except NotFound:
