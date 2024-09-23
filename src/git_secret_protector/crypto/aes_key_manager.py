@@ -38,8 +38,8 @@ class AesKeyManager:
                     f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter.")
                 raise ValueError(f"Parameter with name {parameter_name} already exists.")
 
-            aes_key = os.urandom(self.AES_KEY_SIZE)  # 256 bits for AES-256
-            iv = os.urandom(self.IV_SIZE)  # 128 bits (AES block size)
+            aes_key = os.urandom(self.AES_KEY_SIZE)
+            iv = os.urandom(self.IV_SIZE)
 
             data = {
                 'aes_key': base64.b64encode(s=aes_key).decode(encoding='utf-8'),
