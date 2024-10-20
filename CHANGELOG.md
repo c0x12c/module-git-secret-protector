@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
-## [0.8.0] - 2024-10-20
+## [Unreleased]
 
 ### Added
 
