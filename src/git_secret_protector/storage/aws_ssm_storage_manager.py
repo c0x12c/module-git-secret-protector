@@ -19,20 +19,20 @@ class AwsSsmStorageManager(StorageManagerInterface):
                 Overwrite=True
             )
         except ClientError as e:
-            raise ValueError(f"Failed to store parameter with [name={name}]") from e
+            raise ValueError(f"Failed to store parameter with [name={name}]: {str(e)}") from e
 
     def retrieve(self, name: str) -> str:
         try:
             response = self.client.get_parameter(Name=name, WithDecryption=True)
             return json.loads(response['Parameter']['Value'])
         except ClientError as e:
-            raise ValueError(f"Failed to retrieve parameter [name={name}]") from e
+            raise ValueError(f"Failed to retrieve parameter [name={name}]: {str(e)}") from e
 
     def delete(self, name: str) -> None:
         try:
             self.client.delete_parameter(Name=name)
         except ClientError as e:
-            raise ValueError(f"Failed to delete parameter with [name={name}]") from e
+            raise ValueError(f"Failed to delete parameter with [name={name}]: {str(e)}") from e
 
     def exists(self, name: str) -> bool:
         try:
