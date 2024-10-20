@@ -8,8 +8,6 @@ from git_secret_protector.core.settings import get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
 
-logger = logging.getLogger(__name__)
-
 MODULE_FOLDER = '.git_secret_protector'
 
 inj = GitSecretProtectorModule.get_injector()
@@ -40,21 +38,16 @@ def init_module_folder():
 
 def setup_aes_key(args):
     filter_name = args.filter_name
-    logger.info("Set up AES key for filter: %s", filter_name)
     manager.setup_aes_key(filter_name=filter_name)
-    logger.info(f"Filters for '{filter_name}' have been set up successfully.")
 
 
 def setup_filters(args):
-    logger.info("Set up Git filters")
     manager.setup_filters()
 
 
 def pull_aes_key(args):
     filter_name = args.filter_name
-    logger.info("Pull AES key for filter: %s", filter_name)
     manager.pull_aes_key(filter_name=filter_name)
-    logger.info(f"Pull AES key for filter '{filter_name}' successfully.")
 
 
 def rotate_key(args):

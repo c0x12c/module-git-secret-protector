@@ -12,32 +12,14 @@ logger = logging.getLogger(__name__)
 class GitAttributesParser:
     def __init__(self):
         settings = get_settings()
-        git_attributes_file = os.path.join(settings.base_dir, '.gitattributes')
+        self.git_attributes_file = os.path.join(settings.base_dir, '.gitattributes')
+        self._patterns = None
 
-        self.git_attributes_file = git_attributes_file
-        self.patterns = self._parse_patterns()
-
-    def _parse_patterns(self):
-        """Parse the .gitattributes file to extract patterns associated with filters."""
-        patterns = {}
-        with open(self.git_attributes_file, 'r') as file:
-            for line in file:
-                match = re.search(r'(.+)\s+filter=(\S+)', line)
-                if match:
-                    pattern = match.group(1).strip()
-                    filter_name = match.group(2).strip()
-                    if filter_name not in patterns:
-                        patterns[filter_name] = []
-                    patterns[filter_name].append(pattern)
-        return patterns
-
-    def _find_files_matching_patterns(self, patterns, repo_root='.'):
-        """Helper method to find files matching given patterns using glob."""
-        matched_files = set()  # Using a set to avoid duplicates
-        for pattern in patterns:
-            files = glob.glob(os.path.join(repo_root, pattern), recursive=True)
-            matched_files.update(files)
-        return list(matched_files)
+    @property
+    def patterns(self):
+        if self._patterns is None:
+            self._patterns = self._parse_patterns()
+        return self._patterns
 
     def get_secret_files(self, repo_root='.'):
         """Return all files matching any of the filter patterns."""
@@ -62,3 +44,25 @@ class GitAttributesParser:
                 if fnmatch.fnmatch(os.path.relpath(file_name, repo_root), pattern):
                     return filter_name
         return None
+
+    def _parse_patterns(self):
+        """Parse the .gitattributes file to extract patterns associated with filters."""
+        patterns = {}
+        with open(self.git_attributes_file, 'r') as file:
+            for line in file:
+                match = re.search(r'(.+)\s+filter=(\S+)', line)
+                if match:
+                    pattern = match.group(1).strip()
+                    filter_name = match.group(2).strip()
+                    if filter_name not in patterns:
+                        patterns[filter_name] = []
+                    patterns[filter_name].append(pattern)
+        return patterns
+
+    def _find_files_matching_patterns(self, patterns, repo_root='.'):
+        """Helper method to find files matching given patterns using glob."""
+        matched_files = set()  # Using a set to avoid duplicates
+        for pattern in patterns:
+            files = glob.glob(os.path.join(repo_root, pattern), recursive=True)
+            matched_files.update(files)
+        return list(matched_files)
