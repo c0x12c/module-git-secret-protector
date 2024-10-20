@@ -136,6 +136,14 @@ class AesKeyManager:
         logger.debug("No local cache found for filter: %s", filter_name)
         return None
 
+    def remove_key_iv_from_cache(self, filter_name: str):
+        cache_path = self._cache_path(filter_name=filter_name)
+        logger.debug("Remove cache file: %s", cache_path)
+
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+            logger.debug(f"Successfully removed local cache for filter: {filter_name}")
+
     def _parameter_exists(self, parameter_name):
         """Check if a parameter exists in the storage manager."""
         try:

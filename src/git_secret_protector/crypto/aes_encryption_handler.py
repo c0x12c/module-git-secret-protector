@@ -54,7 +54,7 @@ class AesEncryptionHandler:
 
     def _perform_encryption(self, data: bytes) -> bytes:
         if data.startswith(self.magic_header):
-            logger.warning("Data already contains MAGIC_HEADER. Skipping encryption.")
+            logger.info("Data already contains MAGIC_HEADER. Skipping encryption.")
             return data
 
         cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
@@ -63,7 +63,7 @@ class AesEncryptionHandler:
 
     def _perform_decryption(self, data: bytes) -> bytes:
         if not data.startswith(self.magic_header):
-            logger.warning("Data does not start with MAGIC HEADER. Skipping decryption.")
+            logger.info("Data does not start with MAGIC HEADER. Skipping decryption.")
             return data
 
         encrypted_data = data[len(self.magic_header):]

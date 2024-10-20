@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [0.8.0] - 2024-10-20
+
+### Added
+
+- Add `clean-filter` command, which allows the cleaning of staged data for a specified filter.
+
 ## [0.7.0] - 2024-10-20
 
 ### Changed

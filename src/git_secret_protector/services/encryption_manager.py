@@ -46,7 +46,7 @@ class EncryptionManager:
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
             self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
-            logger.info("Successfully pull AES key for filter: %s", filter_name)
+            logger.info("Successfully pulled AES key for filter: %s", filter_name)
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)
             print(f"Pull AES key command failed: {e}")
@@ -60,7 +60,7 @@ class EncryptionManager:
                 return
 
             self.__get_encryption_handler(filter_name=filter_name).encrypt_files(files=files_to_encrypt)
-            logging.info(f"Successfully encrypt files for filter: {filter_name}")
+            logging.info(f"Successfully encrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
             print(f"Encrypt files command failed: {str(e)}")
@@ -74,7 +74,7 @@ class EncryptionManager:
                 return
 
             self.__get_encryption_handler(filter_name=filter_name).decrypt_files(files=files_to_decrypt)
-            logging.info(f"Successfully decrypt files for filter: {filter_name}")
+            logging.info(f"Successfully decrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
             print(f"Decrypt files command failed: {e}")
@@ -99,7 +99,7 @@ class EncryptionManager:
 
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
-            logging.info(f"Successfully encrypt data from stdin for file: {file_name}")
+            logging.info(f"Successfully encrypted data from stdin for file: {file_name}")
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
             sys.stdout.buffer.write(input_data)
@@ -126,7 +126,7 @@ class EncryptionManager:
 
             sys.stdout.buffer.write(decrypted_data)
             sys.stdout.buffer.flush()
-            logging.info(f"Successfully decrypt data from stdin for file: {file_name}")
+            logging.info(f"Successfully decrypted data from stdin for file: {file_name}")
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
             sys.stdout.buffer.write(encrypted_data)
@@ -140,6 +140,21 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
             print(f"Rotate keys command failed: {e}")
+
+    def clean_filter(self, filter_name: str):
+        try:
+            logger.info("Cleaning staged data for filter: %s", filter_name)
+
+            try:
+                self.encrypt_files(filter_name=filter_name)
+            except Exception as e:
+                logger.warning("Failed to encrypt files for filter '%s': %s", filter_name, e)
+
+            self.key_manager.remove_key_iv_from_cache(filter_name=filter_name)
+            logger.info("Successfully cleaned staged data for filter: %s", filter_name)
+        except Exception as e:
+            logger.error(f"Clean filter command failed: {e}", exc_info=True)
+            print(f"Clean filter command failed: {e}")
 
     def status(self):
         try:

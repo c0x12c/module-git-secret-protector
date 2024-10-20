@@ -75,6 +75,16 @@ def encrypt_files_by_filter(args):
     manager.encrypt_files(filter_name=filter_name)
 
 
+def destroy_aes_key(args):
+    filter_name = args.filter_name
+    manager.setup_aes_key(filter_name=filter_name)
+
+
+def clean_filter(args):
+    filter_name = args.filter_name
+    manager.clean_filter(filter_name=filter_name)
+
+
 def status_command(_):
     manager.status()
 
@@ -92,7 +102,8 @@ def main():
         ('pull-aes-key', pull_aes_key, "Pull AES key for a filter"),
         ('rotate-key', rotate_key, "Rotate AES key and re-encrypt secrets"),
         ('decrypt-files', decrypt_files_by_filter, "Decrypt files for a specific filter"),
-        ('encrypt-files', encrypt_files_by_filter, "Encrypt all files for a specified filter")
+        ('encrypt-files', encrypt_files_by_filter, "Encrypt all files for a specified filter"),
+        ('clean-filter', clean_filter, "Clean staged data for a specified filter")
     ]
 
     # Command to set up Git filters
