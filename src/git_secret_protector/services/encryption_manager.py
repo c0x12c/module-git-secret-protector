@@ -1,8 +1,11 @@
 import logging
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import injector
+import toml
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.core.settings import get_settings
@@ -31,6 +34,7 @@ class EncryptionManager:
             logger.info("Setting up AES key for filter: %s", filter_name)
             self.key_manager.setup_aes_key_and_iv(filter_name)
             logger.info("Successfully set up AES key for filter: %s", filter_name)
+            print(f"Successfully set up AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
             print(f"AES key setup command failed: {e}")
@@ -41,12 +45,14 @@ class EncryptionManager:
         for filter_name in filter_names:
             self.__init_filter(filter_name=filter_name)
         logger.info("Successfully set up filters")
+        print("Successfully set up filters")
 
     def pull_aes_key(self, filter_name: str):
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
             self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
             logger.info("Successfully pulled AES key for filter: %s", filter_name)
+            print(f"Successfully pulled AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)
             print(f"Pull AES key command failed: {e}")
@@ -61,6 +67,7 @@ class EncryptionManager:
 
             self.__get_encryption_handler(filter_name=filter_name).encrypt_files(files=files_to_encrypt)
             logging.info(f"Successfully encrypted files for filter: {filter_name}")
+            print(f"Successfully encrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
             print(f"Encrypt files command failed: {str(e)}")
@@ -75,6 +82,7 @@ class EncryptionManager:
 
             self.__get_encryption_handler(filter_name=filter_name).decrypt_files(files=files_to_decrypt)
             logging.info(f"Successfully decrypted files for filter: {filter_name}")
+            print(f"Successfully decrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
             print(f"Decrypt files command failed: {e}")
@@ -137,6 +145,7 @@ class EncryptionManager:
             rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
             rotator.rotate_key(filter_name)
             logger.info("Key rotation complete for filter: %s", filter_name)
+            print(f"Key rotation complete for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
             print(f"Rotate keys command failed: {e}")
@@ -152,6 +161,7 @@ class EncryptionManager:
 
             self.key_manager.remove_key_iv_from_cache(filter_name=filter_name)
             logger.info("Successfully cleaned staged data for filter: %s", filter_name)
+            print(f"Successfully cleaned staged data for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Clean filter command failed: {e}", exc_info=True)
             print(f"Clean filter command failed: {e}")
@@ -172,7 +182,29 @@ class EncryptionManager:
         except Exception as e:
             print(f"Status command failed: {e}")
 
-    def __init_filter(self, filter_name: str):
+    def show_project_version(self):
+        try:
+            project_root = self._get_poetry_root_path()
+            toml_path = os.path.join(project_root, 'pyproject.toml')
+            with open(toml_path, 'r') as file:
+                pyproject_data = toml.load(file)
+
+            version = pyproject_data.get('tool', {}).get('poetry', {}).get('version', 'Version not found')
+            print(f"git-secret-protector version: {version}")
+        except Exception as e:
+            logger.error(f"Failed to get project version: {e}", exc_info=True)
+            print(f"Failed to get project version: {str(e)}")
+
+    @staticmethod
+    def _get_poetry_root_path():
+        # Start from the current directory and look for pyproject.toml upward
+        current_path = Path(__file__).resolve()
+        for parent in current_path.parents:
+            if (parent / "pyproject.toml").exists():
+                return parent
+
+    @staticmethod
+    def __init_filter(filter_name: str):
         # Check for existing Git filters
         check_clean = subprocess.getoutput(f'git config --get filter.{filter_name}.clean')
         check_smudge = subprocess.getoutput(f'git config --get filter.{filter_name}.smudge')
