@@ -65,7 +65,7 @@ class AesKeyManager:
             logger.info(f"AES key and IV setup and stored in storage for filter: {filter_name}")
             self.cache_key_iv_locally(filter_name, json_data)
         except Exception as e:
-            raise AesKeyError(f"Failed to setup AES key and IV for filter '{filter_name}': {str(e)}") from e
+            raise AesKeyError(f"Failed to setup AES key and IV for filter '{filter_name}': {str(e)}")
 
     """
     Destroys the AES key and initialization vector (IV) associated with the given filter name.
@@ -90,12 +90,12 @@ class AesKeyManager:
                 return base64.b64decode(local_data['aes_key']), base64.b64decode(local_data['iv'])
 
             parameter_name = self._parameter_name(filter_name=filter_name)
-            data = json.loads(self._get_storage_manager().retrieve(parameter_name))
+            data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             self.cache_key_iv_locally(filter_name, json.dumps(data))
 
             return base64.b64decode(data['aes_key']), base64.b64decode(data['iv'])
         except Exception as e:
-            raise AesKeyError(f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}") from e
+            raise AesKeyError(f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}")
 
     """
     Clears the locally cached AES key and initialization vector (IV) associated with the given filter name.
@@ -115,7 +115,7 @@ class AesKeyManager:
             self._get_storage_manager().delete(name=parameter_name)
             logger.info(f"Successfully destroyed AES key and IV in storage for filter: {filter_name}")
         except Exception as e:
-            raise AesKeyError(f"Failed to destro AES key and IV for filter '{filter_name}': {str(e)}") from e
+            raise AesKeyError(f"Failed to destroy AES key and IV for filter '{filter_name}': {str(e)}")
 
     def cache_key_iv_locally(self, filter_name: str, json_data: str):
         cache_path = self._cache_path(filter_name=filter_name)

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.0.0] - 2024-10-21
+
+### Changed
+
+- Add `aws_account_id` to parameter name to prevent mistakenly pulling the AES key from another project.
+- Add `version` command, which returns the current module version.
+  Add AWS Account ID to AWS parameter name
 ## [0.8.0] - 2024-10-20
 
 ### Added

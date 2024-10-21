@@ -1,6 +1,5 @@
 import argparse
 import configparser
-import logging
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
@@ -41,7 +40,7 @@ def setup_aes_key(args):
     manager.setup_aes_key(filter_name=filter_name)
 
 
-def setup_filters(args):
+def setup_filters(_):
     manager.setup_filters()
 
 
@@ -89,6 +88,10 @@ def status_command(_):
     manager.status()
 
 
+def show_project_version(_):
+    manager.show_project_version()
+
+
 def main():
     init_module_folder()
 
@@ -128,6 +131,10 @@ def main():
     # Status command
     parser_status = subparsers.add_parser('status', help="List all filters and file statuses")
     parser_status.set_defaults(func=status_command)
+
+    # Version command
+    parser_status = subparsers.add_parser('version', help="Show version")
+    parser_status.set_defaults(func=show_project_version)
 
     args = parser.parse_args()
     if hasattr(args, 'func'):

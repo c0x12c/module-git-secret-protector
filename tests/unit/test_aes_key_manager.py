@@ -39,6 +39,9 @@ class TestAesKeyManager(unittest.TestCase):
     @patch('boto3.client')
     def test_setup_aes_key_and_iv(self, mock_boto_client):
         filter_name = secrets.token_hex(8)
+        account_id = secrets.token_hex(8)
+
+        mock_boto_client.return_value.get_caller_identity.return_value = {'Account': account_id}
 
         # Configure the mock to raise a ClientError for get_parameter
         mock_boto_client.return_value.get_parameter.side_effect = ClientError({
@@ -50,7 +53,7 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
-        expected_parameter_name = f"/encryption/{self.mock_settings.module_name}/{filter_name}/key_iv"
+        expected_parameter_name = f"/encryption/{account_id}/{self.mock_settings.module_name}/{filter_name}/key_iv"
 
         mock_boto_client.return_value.put_parameter.assert_called_once()
         args, kwargs = mock_boto_client.return_value.put_parameter.call_args
@@ -61,7 +64,7 @@ class TestAesKeyManager(unittest.TestCase):
 
     @patch('os.path.exists', return_value=True)
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_retrieve_key_and_iv_from_cache_hit(self, mock_open, mock_exists):
+    def test_retrieve_key_and_iv_from_cache_hit(self, mock_open, _):
         json_data = self.random_encoded_data()
         filter_name = secrets.token_hex(8)
         mock_open.return_value.read.return_value = json_data
@@ -75,7 +78,7 @@ class TestAesKeyManager(unittest.TestCase):
     @patch('os.path.exists', return_value=False)
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
     @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
-    def test_retrieve_key_and_iv_from_cache_miss(self, mock_create, mock_open, mock_exists):
+    def test_retrieve_key_and_iv_from_cache_miss(self, mock_create, mock_open, _):
         mock_create.return_value = self.mock_storage_manager
         self.mock_storage_manager.parameter_name.return_value = secrets.token_hex(8)
 

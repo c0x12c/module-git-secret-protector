@@ -6,6 +6,7 @@ from google.api_core.exceptions import NotFound, AlreadyExists, GoogleAPIError
 from google.cloud import secretmanager
 from google.cloud.secretmanager_v1 import Secret, SecretPayload
 
+from git_secret_protector.error.storage_error import StorageError
 from git_secret_protector.storage.storage_manager_interface import StorageManagerInterface
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,10 @@ class GcpSecretStorageManager(StorageManagerInterface):
             config = json.loads(result.stdout)
             project_id = config.get("core", {}).get("project", "")
             if not project_id:
-                raise RuntimeError("No project ID found in the current gcloud configuration.")
+                raise StorageError("No project ID found in the current gcloud configuration.")
             return project_id
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to retrieve project ID from gcloud: {str(e)}") from e
+            raise StorageError(f"Failed to retrieve project ID from gcloud: {str(e)}") from e
 
     def store(self, name: str, value: str) -> None:
         secret_id = f"projects/{self.project_id}/secrets/{name}"
@@ -53,7 +54,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
             except AlreadyExists:
                 raise ValueError(f"Secret with name [{name}] already exists.")
         except GoogleAPIError as e:
-            raise RuntimeError(f"Google API error while storing the secret: {str(e)}") from e
+            raise StorageError(f"Google API error while storing the secret: {str(e)}") from e
 
         # Add a new version with the updated secret value
         try:
@@ -62,7 +63,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
                 payload=SecretPayload({"data": value.encode("UTF-8")})
             )
         except GoogleAPIError as e:
-            raise RuntimeError(f"Failed to add secret version: {str(e)}") from e
+            raise StorageError(f"Failed to add secret version: {str(e)}") from e
 
     def retrieve(self, name: str) -> str:
         secret_id = f"projects/{self.project_id}/secrets/{name}/versions/latest"
@@ -73,7 +74,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
         except NotFound:
             raise ValueError(f"Secret [name={name}] not found.")
         except GoogleAPIError as e:
-            raise RuntimeError(f"Google API error while retrieving the secret: {str(e)}") from e
+            raise StorageError(f"Google API error while retrieving the secret: {str(e)}") from e
 
     def delete(self, name: str) -> None:
         secret_id = f"projects/{self.project_id}/secrets/{name}"
@@ -82,7 +83,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
         except NotFound:
             raise ValueError(f"Secret [name={name}] not found.")
         except GoogleAPIError as e:
-            raise RuntimeError(f"Google API error while deleting the secret: {str(e)}") from e
+            raise StorageError(f"Google API error while deleting the secret: {str(e)}") from e
 
     def exists(self, name: str) -> bool:
         secret_id = f"projects/{self.project_id}/secrets/{name}"
@@ -92,7 +93,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
         except NotFound:
             return False
         except GoogleAPIError as e:
-            raise RuntimeError(f"Google API error while checking if the secret exists: {str(e)}") from e
+            raise StorageError(f"Google API error while checking if the secret exists: {str(e)}") from e
 
     def parameter_name(self, module_name: str, filter_name: str):
         return f"encryption_{module_name}_{filter_name}_key_iv"
