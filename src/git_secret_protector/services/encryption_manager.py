@@ -1,17 +1,16 @@
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import injector
-import toml
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.core.settings import get_settings
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.services.key_rotator import KeyRotator
+from git_secret_protector.utils.project_version import get_project_version_from_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -182,14 +181,10 @@ class EncryptionManager:
         except Exception as e:
             print(f"Status command failed: {e}")
 
-    def show_project_version(self):
+    @staticmethod
+    def show_project_version():
         try:
-            project_root = self._get_poetry_root_path()
-            toml_path = os.path.join(project_root, 'pyproject.toml')
-            with open(toml_path, 'r') as file:
-                pyproject_data = toml.load(file)
-
-            version = pyproject_data.get('tool', {}).get('poetry', {}).get('version', 'Version not found')
+            version = get_project_version_from_metadata()
             print(f"git-secret-protector version: {version}")
         except Exception as e:
             logger.error(f"Failed to get project version: {e}", exc_info=True)
