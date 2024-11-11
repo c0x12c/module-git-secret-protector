@@ -26,39 +26,14 @@ class GcpSecretStorageManager(StorageManagerInterface):
             self._project_id = self._fetch_project_id()
         return self._project_id
 
-    def _fetch_project_id(self) -> str:
-        if self.settings.use_gcp_default_credentials_for_project_id:
-            return self._get_gcloud_project_id_from_default_credentials()
-        return self._get_gcloud_project_id_using_gcloud_cli()
-
     @staticmethod
-    def _get_gcloud_project_id_from_default_credentials() -> str:
+    def _fetch_project_id() -> str:
         try:
             logger.debug('Getting project ID from default credentials')
             _, project_id = default()
             return project_id
         except Exception as e:
             raise StorageError(f"Failed to retrieve project ID from the default credentials: {str(e)}") from e
-
-    # TODO: Remove this deprecated method once the change to fetch the GCloud Project ID from the default credentials is successfully rolled out.
-    @staticmethod
-    def _get_gcloud_project_id_using_gcloud_cli() -> str:
-        try:
-            # Run 'gcloud config list --format=json' to get the active project
-            result = subprocess.run(
-                ["gcloud", "config", "list", "--format=json"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
-            # Parse the JSON response
-            config = json.loads(result.stdout)
-            project_id = config.get("core", {}).get("project", "")
-            if not project_id:
-                raise StorageError("No project ID found in the current gcloud configuration.")
-            return project_id
-        except subprocess.CalledProcessError as e:
-            raise StorageError(f"Failed to retrieve project ID from gcloud: {str(e)}") from e
 
     def store(self, name: str, value: str) -> None:
         secret_id = f"projects/{self.project_id}/secrets/{name}"
