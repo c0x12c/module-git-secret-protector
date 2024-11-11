@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.1.0] - 2024-11-11
+
+### Changed
+
+- Retrieve GCP Project ID from default credentials.
+
+### Removed
+- Remove the legacy parameter key in AWS Parameter Store.
+
 ## [1.0.2] - 2024-10-21
 
 ### Changed

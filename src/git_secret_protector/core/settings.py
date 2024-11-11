@@ -28,6 +28,7 @@ class Settings:
     magic_header: str = 'ENCRYPTED'
     storage_type: StorageType = StorageType.AWS_SSM
     config: configparser.ConfigParser = field(init=False)
+    use_gcp_default_credentials_for_project_id: bool = True
 
     def __post_init__(self):
         self.base_dir = self.find_base_dir()
@@ -58,6 +59,7 @@ class Settings:
             self.log_max_size = self.config.getint('DEFAULT', 'log_max_size', fallback=self.log_max_size)
             self.log_backup_count = self.config.getint('DEFAULT', 'log_backup_count', fallback=self.log_backup_count)
             self.magic_header = self.config.get('DEFAULT', 'magic_header', fallback=self.magic_header)
+            self.use_gcp_default_credentials_for_project_id = self.config.getboolean('DEFAULT', 'use_gcp_default_credentials_for_project_id', fallback=self.use_gcp_default_credentials_for_project_id)
 
             storage_type_str = self.config.get('DEFAULT', 'storage_type', fallback=self.storage_type.value)
             if storage_type_str in [member.value for member in StorageType]:

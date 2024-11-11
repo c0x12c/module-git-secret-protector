@@ -3,9 +3,11 @@ import logging
 import subprocess
 
 from google.api_core.exceptions import NotFound, AlreadyExists, GoogleAPIError
+from google.auth import default
 from google.cloud import secretmanager
 from google.cloud.secretmanager_v1 import Secret, SecretPayload
 
+from git_secret_protector.core.settings import get_settings
 from git_secret_protector.error.storage_error import StorageError
 from git_secret_protector.storage.storage_manager_interface import StorageManagerInterface
 
@@ -14,11 +16,33 @@ logger = logging.getLogger(__name__)
 
 class GcpSecretStorageManager(StorageManagerInterface):
     def __init__(self):
+        self.settings = get_settings()
         self.client = secretmanager.SecretManagerServiceClient()
-        self.project_id = self.get_gcloud_project_id()
+        self._project_id = None
+
+    @property
+    def project_id(self):
+        if self._project_id is None:
+            self._project_id = self._fetch_project_id()
+        return self._project_id
+
+    def _fetch_project_id(self) -> str:
+        if self.settings.use_gcp_default_credentials_for_project_id:
+            return self._get_gcloud_project_id_from_default_credentials()
+        return self._get_gcloud_project_id_using_gcloud_cli()
 
     @staticmethod
-    def get_gcloud_project_id() -> str:
+    def _get_gcloud_project_id_from_default_credentials() -> str:
+        try:
+            logger.warning('Getting project ID from default credentials')
+            _, project_id = default()
+            return project_id
+        except Exception as e:
+            raise StorageError(f"Failed to retrieve project ID from the default credentials: {str(e)}") from e
+
+    # TODO: Remove this deprecated method once the change to fetch the GCloud Project ID from the default credentials is successfully rolled out.
+    @staticmethod
+    def _get_gcloud_project_id_using_gcloud_cli() -> str:
         try:
             # Run 'gcloud config list --format=json' to get the active project
             result = subprocess.run(

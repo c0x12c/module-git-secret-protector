@@ -46,15 +46,17 @@ class AwsSsmStorageManager(StorageManagerInterface):
             raise StorageError(f"Failed to store parameter with [name={name}]: {str(e)}") from e
 
     def retrieve(self, name: str) -> str:
-
         try:
             response = self.client.get_parameter(Name=name, WithDecryption=True)
+
+            # FIXME: clean the code of legacy parameter once the change to remove legacy parameter is successfully rolled out
+            if self.account_id in name:
+                self._remove_legacy_parameter_if_present(parameter=name)
+
             return json.loads(response['Parameter']['Value'])
         except Exception as e:
             error_message = str(e)
             if "ParameterNotFound" in error_message:
-                if self.account_id in name:
-                    return self._handle_legacy_parameter(parameter=name)
                 raise StorageError(f"Parameter not found [name={name}]") from e
             raise StorageError(f"Failed to retrieve parameter [name={name}]: {error_message}") from e
 
@@ -69,6 +71,15 @@ class AwsSsmStorageManager(StorageManagerInterface):
         self.store(parameter, result)
 
         return result
+
+    def _remove_legacy_parameter_if_present(self, parameter: str):
+        legacy_parameter = parameter.replace(f"/encryption/{self.account_id}/", "/encryption/")
+        logger.warning(
+            f"Try to clean the legacy parameter '{legacy_parameter}'.")
+
+        if self.exists(name=legacy_parameter):
+            logger.info(f"Found legacy parameter '{legacy_parameter}' found. Removing it.")
+            self.delete(name=legacy_parameter)
 
     def delete(self, name: str) -> None:
         try:
