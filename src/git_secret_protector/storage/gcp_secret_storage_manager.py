@@ -34,7 +34,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
     @staticmethod
     def _get_gcloud_project_id_from_default_credentials() -> str:
         try:
-            logger.warning('Getting project ID from default credentials')
+            logger.debug('Getting project ID from default credentials')
             _, project_id = default()
             return project_id
         except Exception as e:
