@@ -182,6 +182,66 @@ Logs are stored in the `logs/` directory by default, and you can configure the l
 
 See [CHANGELOG.md](CHANGELOG.md) for a history of changes and updates.
 
-## Support
+## Troubleshooting
 
-If you encounter any issues or have any questions, please open an issue on the GitHub repository or reach out to our support team.
+If you encounter any issues while using the `git-secret-protector` tool, try the following tips and solutions:
+
+### Common Issues
+
+#### 1. Filter Configuration Issues
+
+If the filters are not configured correctly, you might encounter errors when encrypting or decrypting files.
+
+**Solution**:
+Re-setup the filters based on your `.gitattributes` file.
+
+```sh
+git-secret-protector setup-filters
+```
+
+#### 2. Missing or Incorrect AES Key
+
+If you fail to encrypt or decrypt files due to a missing or incorrect AES key, you will need to ensure that the keys are
+correctly fetched from the Cloud Secret Storage Service.
+
+**Solution**:
+Pull the latest AES keys from the Cloud Secret Storage Service for the relevant filters.
+
+```sh
+git-secret-protector pull-aes-key <filter_name>
+```
+
+#### 3. Permissions Issues
+
+Lack of necessary permissions can result in errors while accessing Cloud Secret Storage Services.
+
+**Solution**:
+Ensure that you have the required permissions to manage resources in your Cloud Secret Storage Service.
+
+### Example Issue: File Decryption Failure
+
+**Issue**:
+You receive an error when trying to decrypt files using the `decrypt-files` command.
+
+**Solution**:
+
+1. Ensure that you have pulled the latest AES keys:
+
+    ```sh
+    git-secret-protector pull-aes-key <filter_name>
+    ```
+
+2. Check if the filters are correctly set up:
+
+    ```sh
+    git-secret-protector setup-filters
+    ```
+
+3. Attempt to decrypt the files again:
+
+    ```sh
+    git-secret-protector decrypt-files <filter_name>
+    ```
+
+If the issue persists, verify your configurations in the `config.ini` file, and consult the logs located in the `logs/`
+directory for more detailed error information.
