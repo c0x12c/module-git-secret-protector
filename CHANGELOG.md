@@ -6,11 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
-## [Unreleased]
+## [1.1.1] - 2025-01-01
 
 ### Changed
 
-- Removed redundant code for project ID retrieval using gcloud CLI.
+- Removed redundant code for retrieving the project ID using the gcloud CLI.
+- Upgraded dependencies.
 
 ## [1.1.0] - 2024-11-11
 
