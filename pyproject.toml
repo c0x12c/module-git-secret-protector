@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "git-secret-protector"
-version = "1.2.2"
+version = "1.1.1"
 description = "A tool for managing secrets in Git with AWS Parameter Store integration."
 authors = ["Duc Duong <duc.duong@c0x12c.com>"]
 readme = "README.md"
