@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.2.0] - 2025-03-30
+
+### Changed
+
+- Improved AES decryption error message.
+- Include short AWS region in SSM parameter names.
+
 ## [1.1.1] - 2025-01-01
 
 ### Changed
