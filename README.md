@@ -104,42 +104,6 @@ Before executing this command, ensure you have the necessary permissions to mana
 
 The status will display the files managed by the filter and their encryption status.
 
-#### 1.6. Add a File to a Managed List
-
-- Add the file:  
-  Place the file under a managed path corresponding to a filter. For example, add `live/dev/secret.auto.tfvars` under the `live/dev/secret*.auto.tfvars` pattern. Update the `.gitattributes` file to include this specific path or pattern if necessary.
-  
-  ```text
-  live/dev/secret*.auto.tfvars filter=sample-app-dev diff=sample-app-dev
-  ```
-
-- Encrypt the file:  
-  Use the following command to encrypt the file under the specified filter:
-
-  ```sh
-  git-secret-protector encrypt-files <filter>
-  ```
-  Replace `<filter>` with the name of the filter (e.g., `sample-app-dev`).
-
-- Verify encryption:  
-  Confirm that the file has been encrypted by running:
-
-  ```sh
-  git-secret-protector status
-  ```
-    
-  Sample output:
-  ```
-  Filter: sample-app-dev
-    ./live/dev/secrets.auto.tfvars: Encrypted
-    ./config/slack/secrets.tf: Encrypted
-  Filter: sample-app-prod
-    ...
-  ```
-
-- Review before creating pull requests:  
-  Inspect the pull request to ensure encrypted files are included. Verify everything is correct before clicking the `Create pull request` button.
-
 ### 2. Installation Steps for Team Members
 
 #### 2.1. Pull AES Key and IV
@@ -172,15 +136,47 @@ This command fetches the latest AES data key and IV from the Cloud Secret Storag
   git-secret-protector decrypt-files <filter_name>
   ```
 
-### 3. Additional Commands
+### 3. Common Usages
 
-#### 3.1. View Encryption Status
+#### 3.1. Add a File to a filter's managed list
 
-- Command to obtain a comprehensive overview of the encryption status of files within the repository:
+- **Add the file**
+
+  Update the `.gitattributes` file to include the file under a path that matches a filter pattern. For example, to add `live/dev/secret.auto.tfvars`, update the `.gitattributes` file as follows:
+
+  ```text
+  live/dev/secret*.auto.tfvars filter=sample-app-dev diff=sample-app-dev
+  ```
+
+- **Encrypt the file**
+
+  Use the following command to encrypt the file under the specified filter:
+
+  ```sh
+  git-secret-protector encrypt-files <filter>
+  ```
+  Replace `<filter>` with the name of the filter (e.g., `sample-app-dev`).
+
+- **Verify encryption**
+
+  Confirm that the file has been encrypted by running:
 
   ```sh
   git-secret-protector status
   ```
+
+  Sample output
+  ```
+  Filter: sample-app-dev
+    ./live/dev/secrets.auto.tfvars: Encrypted
+    ./config/slack/secrets.tf: Encrypted
+  Filter: sample-app-prod
+    ...
+  ```
+
+- **Review before creating pull requests**
+
+  Inspect the pull request to ensure encrypted files are included. Verify everything is correct before clicking the `Create pull request` button.
 
 #### 3.2. Key Rotation
 
@@ -198,7 +194,7 @@ In case you need to rotate the AES key due to security reasons or a team member 
   - Update the local cache.
 
 
-- Post-Rotation Code Reset:
+- Post-Rotation Code Reset
 
   After rotating the keys, it is necessary to clear the Git cache and re-checkout all files. This step ensures that the smudge filters are triggered, allowing the files to be decrypted with the new key.
 
