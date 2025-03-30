@@ -216,7 +216,7 @@ In case you need to rotate the AES key due to security reasons or a team member 
 
 ### 4. Logging
 
-Logs are stored in the `logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
+Logs are stored in the `.git_secret_protector/logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
 
 ## Development
 
