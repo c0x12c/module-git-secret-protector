@@ -48,6 +48,14 @@
 
 This command will configure the Git clean and smudge filters based on the patterns defined in the `.gitattributes` file. The filters will automatically encrypt and decrypt files based on the specified patterns.
 
+- You can verify the configured filters in the `.git/config` file, for example:
+
+   ```ini
+   [filter "sample-app-dev"]
+       clean = git-secret-protector encrypt sample-app-dev
+       smudge = git-secret-protector decrypt sample-app-dev
+       required = true
+   ```
 
 #### 1.3. Configuration
 
