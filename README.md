@@ -126,7 +126,7 @@ This command fetches the latest AES data key and IV from the Cloud Secret Storag
   git-secret-protector setup-filters
   ```
 
-  Refer to [1.2. Configure Git Filters](#22-configure-git-filters) for instructions to verify if filters have been configured properly.
+  Refer to [1.2. Configure Git Filters](#12-configure-git-filters) for instructions to verify if filters have been configured properly.
 
 #### 2.2. Decrypt secret files
 
