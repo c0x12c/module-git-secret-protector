@@ -77,7 +77,7 @@ config/*.conf filter=configfilter
         # Clean up AES key and IV from SSM
         try:
             print('Clean SSM parameters for filter: secretfilter')
-            self.aes_key_manager.destroy_aes_key_and_iv('secretfilter')
+            # self.aes_key_manager.destroy_aes_key_and_iv('secretfilter')
         except Exception as e:
             logging.error(f"Error during cleanup of SSM parameters: {e}")
 
