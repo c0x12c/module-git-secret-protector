@@ -110,7 +110,7 @@ The status will display the files managed by the filter and their encryption sta
   Place the file under a managed path corresponding to a filter. For example, add `live/dev/secret.auto.tfvars` under the `live/dev/secret*.auto.tfvars` pattern. Update the `.gitattributes` file to include this specific path or pattern if necessary.
   
   ```text
-  live/dev/secret*.auto.tfvars filter=sample-app-prod diff=sample-app-prod
+  live/dev/secret*.auto.tfvars filter=sample-app-dev diff=sample-app-dev
   ```
 
 - Encrypt the file:  
@@ -119,7 +119,7 @@ The status will display the files managed by the filter and their encryption sta
   ```sh
   git-secret-protector encrypt-files <filter>
   ```
-  Replace `<filter>` with the name of the filter (e.g., `sample-app-prod`).
+  Replace `<filter>` with the name of the filter (e.g., `sample-app-dev`).
 
 - Verify encryption:  
   Confirm that the file has been encrypted by running:
@@ -132,9 +132,9 @@ The status will display the files managed by the filter and their encryption sta
   ```
   Filter: sample-app-dev
     ./live/dev/secrets.auto.tfvars: Encrypted
-    ./config/slack/secrets.tf: Decrypted
+    ./config/slack/secrets.tf: Encrypted
   Filter: sample-app-prod
-  ...
+    ...
   ```
 
 - Review before creating pull requests:  
