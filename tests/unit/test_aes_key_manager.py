@@ -37,11 +37,13 @@ class TestAesKeyManager(unittest.TestCase):
         return json.dumps({'aes_key': aes_key, 'iv': iv})
 
     @patch('boto3.client')
-    def test_setup_aes_key_and_iv(self, mock_boto_client):
+    @patch('boto3.session.Session')
+    def test_setup_aes_key_and_iv(self, mock_session, mock_boto_client):
         filter_name = secrets.token_hex(8)
         account_id = secrets.token_hex(8)
 
         mock_boto_client.return_value.get_caller_identity.return_value = {'Account': account_id}
+        mock_session.return_value.region_name = "us-west-2"
 
         # Configure the mock to raise a ClientError for get_parameter
         mock_boto_client.return_value.get_parameter.side_effect = ClientError({
@@ -53,7 +55,7 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.aes_key_manager.setup_aes_key_and_iv(filter_name)
 
-        expected_parameter_name = f"/encryption/{account_id}/{self.mock_settings.module_name}/{filter_name}/key_iv"
+        expected_parameter_name = f"/encryption/{account_id}/uswe2/{self.mock_settings.module_name}/{filter_name}/key_iv"
 
         mock_boto_client.return_value.put_parameter.assert_called_once()
         args, kwargs = mock_boto_client.return_value.put_parameter.call_args
