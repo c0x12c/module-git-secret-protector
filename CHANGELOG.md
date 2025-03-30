@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
-## [1.2.3] - 2025-03-30
-- Bump version to v1.2.3
+## [1.2.4] - 2025-03-30
+- Bump version to v1.2.4
 
 ## [1.2.0] - 2025-03-30
 
