@@ -65,8 +65,6 @@ class AwsSsmStorageManager(StorageManagerInterface):
             logger.info("Retrieving secret from AWS SSM with Name: %s", name)
             response = self.client.get_parameter(Name=name, WithDecryption=True)
             return json.loads(response['Parameter']['Value'])
-        # except ClientError as e:
-        #     raise ValueError(f"Failed to retrieve parameter [name={name}]: {str(e)}") from e
         except Exception as e:
             error_message = str(e)
             if "ParameterNotFound" in error_message:
