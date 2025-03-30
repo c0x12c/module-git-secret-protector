@@ -35,7 +35,8 @@ class AwsSsmStorageManager(StorageManagerInterface):
     def region(self):
         if self._region is None:
             try:
-                self._region = _get_short_region(region=boto3.session.Session().region_name)
+                full_region = boto3.session.Session().region_name
+                self._region = _get_short_region(region=full_region)
             except NoCredentialsError:
                 raise StorageError("No AWS region configured. Please ensure your terminal is logged in to AWS.")
         return self._region
