@@ -14,11 +14,11 @@
 
 - pipx ([Download](https://pipx.pypa.io/stable/installation/))
 
-You can install the `git-secret-protector` module via pipx:
+- You can install the `git-secret-protector` module via pipx:
 
-```sh
-pipx install git-secret-protector
-```
+  ```sh
+  pipx install git-secret-protector
+  ```
 
 ## Usage
 
@@ -26,28 +26,36 @@ pipx install git-secret-protector
 
 #### 1.1. Create .gitattributes file
 
-Create a `.gitattributes` file in the root of your repository to define which files should be encrypted.
+- Create a `.gitattributes` file in the root of your repository to define which files should be encrypted.
 
-Sample `.gitattributes` file:
+  Sample `.gitattributes` file:
 
-```
-dev/secrets* filter=sample-app-dev diff=sample-app-dev
-
-prod/secrets* filter=sample-app-prod diff=sample-app-prod
-
-.gitattributes !filter !diff
-```
+  ```
+  dev/secrets* filter=sample-app-dev diff=sample-app-dev
+  
+  prod/secrets* filter=sample-app-prod diff=sample-app-prod
+  
+  .gitattributes !filter !diff
+  ```
 
 #### 1.2. Configure Git Filters
 
-Set up the Git clean and smudge filters base on the filters defined in the `.gitattributes` file.
+- Set up the Git clean and smudge filters base on the filters defined in the `.gitattributes` file.
 
-```sh
-git-secret-protector setup-filters
-```
+  ```sh
+  git-secret-protector setup-filters
+  ```
 
 This command will configure the Git clean and smudge filters based on the patterns defined in the `.gitattributes` file. The filters will automatically encrypt and decrypt files based on the specified patterns.
 
+- You can verify the configured filters in the `.git/config` file, for example:
+
+   ```ini
+   [filter "sample-app-dev"]
+       clean = git-secret-protector encrypt sample-app-dev
+       smudge = git-secret-protector decrypt sample-app-dev
+       required = true
+   ```
 
 #### 1.3. Configuration
 
@@ -79,55 +87,104 @@ The `config.ini` file contains settings that customize the behavior of the `git-
 
 #### 1.4. Set up AES key
 
+**Notes:** 
 Before executing this command, ensure you have the necessary permissions to manage resources in the using Cloud Secret Storage Services.
 
-```sh
-git-secret-protector setup-aes-key <filter_name>
-```
+- Command to set up AES key
 
-Sample command to set up an AES key for the `sample-app-dev` filter:
+  ```sh
+  git-secret-protector setup-aes-key <filter_name>
+  ```
 
-```sh
-git-secret-protector setup-aes-key sample-app-dev
-```
+- Sample command to set up an AES key for the `sample-app-dev` filter:
+
+  ```sh
+  git-secret-protector setup-aes-key sample-app-dev
+  ```
+
+#### 1.5. Verify filter functionality
+
+- Ensure that files are properly encrypted or decrypted by running:
+
+  ```sh
+  git-secret-protector status
+  ```
+
+The status will display the files managed by the filter and their encryption status.
 
 ### 2. Installation Steps for Team Members
 
 #### 2.1. Pull AES Key and IV
 
+**Notes**
 Before encrypting or decrypting files, it's necessary to retrieve the relevant AES keys from the Cloud Secret Storage Service for filters:
 
-```sh
-git-secret-protector pull-aes-key <filter_name>
-```
+- Command to pull AES key
+  ```sh
+  git-secret-protector pull-aes-key <filter_name>
+  ```
 
 This command fetches the latest AES data key and IV from the Cloud Secret Storage Service for the designated filter and caches them locally for subsequent operations. This step ensures that you have the correct keys for encryption or decryption tasks related to the specified filter.
 
 #### 2.2. Configure Git Filters
 
-Set up the Git clean and smudge filters base on the filters defined in the `.gitattributes` file.
+- Set up the Git clean and smudge filters base on the filters defined in the `.gitattributes` file.
 
-```sh
-git-secret-protector setup-filters
-```
+  ```sh
+  git-secret-protector setup-filters
+  ```
+
+  Refer to [1.2. Configure Git Filters](#12-configure-git-filters) for instructions to verify if filters have been configured properly.
 
 #### 2.2. Decrypt secret files
 
-To decrypt secret files, you can use the following command:
+- Command to decrypt secret files:
 
-```sh
-git-secret-protector decrypt-files <filter_name>
-```
+  ```sh
+  git-secret-protector decrypt-files <filter_name>
+  ```
 
-### 3. Additional Commands
+### 3. Common Usages
 
-#### 3.1. View Encryption Status
+#### 3.1. Add a File to a filter's managed list
 
-Command to obtain a comprehensive overview of the encryption status of files within the repository:
+- **Add the file**
 
-```sh
-git-secret-protector status
-```
+  Update the `.gitattributes` file to include the file under a path that matches a filter pattern. For example, to add `live/dev/secret.auto.tfvars`, update the `.gitattributes` file as follows:
+
+  ```text
+  live/dev/secret*.auto.tfvars filter=sample-app-dev diff=sample-app-dev
+  ```
+
+- **Encrypt the file**
+
+  Use the following command to encrypt the file under the specified filter:
+
+  ```sh
+  git-secret-protector encrypt-files <filter>
+  ```
+  Replace `<filter>` with the name of the filter (e.g., `sample-app-dev`).
+
+- **Verify encryption**
+
+  Confirm that the file has been encrypted by running:
+
+  ```sh
+  git-secret-protector status
+  ```
+
+  Sample output
+  ```
+  Filter: sample-app-dev
+    ./live/dev/secrets.auto.tfvars: Encrypted
+    ./config/slack/secrets.tf: Encrypted
+  Filter: sample-app-prod
+    ...
+  ```
+
+- **Review before creating pull requests**
+
+  Inspect the pull request to ensure encrypted files are included. Verify everything is correct before clicking the `Create pull request` button.
 
 #### 3.2. Key Rotation
 
@@ -145,7 +202,7 @@ In case you need to rotate the AES key due to security reasons or a team member 
   - Update the local cache.
 
 
-- Post-Rotation Code Reset:
+- Post-Rotation Code Reset
 
   After rotating the keys, it is necessary to clear the Git cache and re-checkout all files. This step ensures that the smudge filters are triggered, allowing the files to be decrypted with the new key.
 
@@ -159,7 +216,7 @@ In case you need to rotate the AES key due to security reasons or a team member 
 
 ### 4. Logging
 
-Logs are stored in the `logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
+Logs are stored in the `.git_secret_protector/logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
 
 ## Development
 
@@ -172,7 +229,6 @@ Logs are stored in the `logs/` directory by default, and you can configure the l
   ```
 
 - **Integration Tests**: Located in the `tests/integration` directory, these tests interact with Secret Store in cloud and should be run manually.
-
 
   ```sh
   poetry run pytest tests/integration
@@ -192,30 +248,29 @@ If you encounter any issues while using the `git-secret-protector` tool, try the
 
 If the filters are not configured correctly, you might encounter errors when encrypting or decrypting files.
 
-**Solution**:
+- **Solution**:
 Re-setup the filters based on your `.gitattributes` file.
 
-```sh
-git-secret-protector setup-filters
-```
+  ```sh
+  git-secret-protector setup-filters
+  ```
 
 #### 2. Missing or Incorrect AES Key
 
-If you fail to encrypt or decrypt files due to a missing or incorrect AES key, you will need to ensure that the keys are
-correctly fetched from the Cloud Secret Storage Service.
+If you fail to encrypt or decrypt files due to a missing or incorrect AES key, you will need to ensure that the keys are correctly fetched from the Cloud Secret Storage Service.
 
-**Solution**:
+- **Solution**:
 Pull the latest AES keys from the Cloud Secret Storage Service for the relevant filters.
 
-```sh
-git-secret-protector pull-aes-key <filter_name>
-```
+  ```sh
+  git-secret-protector pull-aes-key <filter_name>
+  ```
 
 #### 3. Permissions Issues
 
 Lack of necessary permissions can result in errors while accessing Cloud Secret Storage Services.
 
-**Solution**:
+- **Solution**:
 Ensure that you have the required permissions to manage resources in your Cloud Secret Storage Service.
 
 ### Example Issue: File Decryption Failure
@@ -225,23 +280,22 @@ You receive an error when trying to decrypt files using the `decrypt-files` comm
 
 **Solution**:
 
-1. Ensure that you have pulled the latest AES keys:
+- Ensure that you have pulled the latest AES keys:
 
-    ```sh
-    git-secret-protector pull-aes-key <filter_name>
-    ```
+  ```sh
+  git-secret-protector pull-aes-key <filter_name>
+  ```
 
-2. Check if the filters are correctly set up:
+- Check if the filters are correctly set up:
 
-    ```sh
-    git-secret-protector setup-filters
-    ```
+  ```sh
+  git-secret-protector setup-filters
+  ```
 
-3. Attempt to decrypt the files again:
+- Attempt to decrypt the files again:
 
-    ```sh
-    git-secret-protector decrypt-files <filter_name>
-    ```
+  ```sh
+  git-secret-protector decrypt-files <filter_name>
+  ```
 
-If the issue persists, verify your configurations in the `config.ini` file, and consult the logs located in the `logs/`
-directory for more detailed error information.
+If the issue persists, verify your configurations in the `config.ini` file, and consult the logs located in the `logs/` directory for more detailed error information.

@@ -10,9 +10,15 @@ from git_secret_protector.storage.storage_manager_interface import StorageManage
 logger = logging.getLogger(__name__)
 
 
+def _get_short_region(region):
+    region_parts = region.split("-")
+    return f"{region_parts[0][:2]}{region_parts[1][:2]}{region_parts[2]}"
+
+
 class AwsSsmStorageManager(StorageManagerInterface):
     def __init__(self):
         self._account_id = None
+        self._region = None
         self._client = None
 
     @property
@@ -24,6 +30,16 @@ class AwsSsmStorageManager(StorageManagerInterface):
             except NoCredentialsError:
                 raise StorageError("No AWS region configured. Please ensure your terminal is logged in to AWS.")
         return self._account_id
+
+    @property
+    def region(self):
+        if self._region is None:
+            try:
+                full_region = boto3.session.Session().region_name
+                self._region = _get_short_region(region=full_region)
+            except NoCredentialsError:
+                raise StorageError("No AWS region configured. Please ensure your terminal is logged in to AWS.")
+        return self._region
 
     @property
     def client(self):
@@ -47,39 +63,29 @@ class AwsSsmStorageManager(StorageManagerInterface):
 
     def retrieve(self, name: str) -> str:
         try:
+            logger.info("Retrieving secret from AWS SSM with Name: %s", name)
             response = self.client.get_parameter(Name=name, WithDecryption=True)
-
-            # FIXME: clean the code of legacy parameter once the change to remove legacy parameter is successfully rolled out
-            if self.account_id in name:
-                self._remove_legacy_parameter_if_present(parameter=name)
-
             return json.loads(response['Parameter']['Value'])
         except Exception as e:
             error_message = str(e)
             if "ParameterNotFound" in error_message:
+                if self.region in name:
+                    return self._handle_legacy_parameter(parameter=name)
                 raise StorageError(f"Parameter not found [name={name}]") from e
             raise StorageError(f"Failed to retrieve parameter [name={name}]: {error_message}") from e
 
     def _handle_legacy_parameter(self, parameter: str) -> str:
-        legacy_parameter = parameter.replace(f"/encryption/{self.account_id}/", "/encryption/")
+        legacy_parameter = parameter.replace(f"/encryption/{self.account_id}/{self.region}/",
+                                             f"/encryption/{self.account_id}/")
         logger.warning(
             f"Parameter '{parameter}' not found. Attempting to retrieve from legacy parameter '{legacy_parameter}'.")
 
         result = self.retrieve(name=legacy_parameter)
 
-        logger.info(f"Legacy parameter '{legacy_parameter}' found. Copying to parameter: '{parameter}'")
+        logger.info(f"Legacy parameter '{legacy_parameter}' found. Copying to new parameter: '{parameter}'")
         self.store(parameter, result)
 
         return result
-
-    def _remove_legacy_parameter_if_present(self, parameter: str):
-        legacy_parameter = parameter.replace(f"/encryption/{self.account_id}/", "/encryption/")
-        logger.warning(
-            f"Try to clean the legacy parameter '{legacy_parameter}'.")
-
-        if self.exists(name=legacy_parameter):
-            logger.info(f"Found legacy parameter '{legacy_parameter}' found. Removing it.")
-            self.delete(name=legacy_parameter)
 
     def delete(self, name: str) -> None:
         try:
@@ -98,4 +104,4 @@ class AwsSsmStorageManager(StorageManagerInterface):
             raise StorageError(f"Failed to check if parameter exists [name={name}]: {error_message}") from e
 
     def parameter_name(self, module_name: str, filter_name: str):
-        return f"/encryption/{self.account_id}/{module_name}/{filter_name}/key_iv"
+        return f"/encryption/{self.account_id}/{self.region}/{module_name}/{filter_name}/key_iv"

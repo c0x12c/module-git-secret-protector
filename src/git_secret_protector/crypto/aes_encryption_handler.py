@@ -46,7 +46,6 @@ class AesEncryptionHandler:
 
         plaintext = self._perform_decryption(data)
 
-        # Write the decrypted data back to the file
         with open(file_path, 'wb') as f:
             f.write(plaintext)
 
@@ -70,5 +69,9 @@ class AesEncryptionHandler:
 
         ciphertext = base64.b64decode(encrypted_data)
         cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
-        plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
-        return plaintext
+
+        try:
+            plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
+            return plaintext
+        except Exception as e:
+            raise ValueError("Invalid AES key") from e
