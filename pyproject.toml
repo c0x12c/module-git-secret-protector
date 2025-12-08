@@ -11,7 +11,7 @@ python = ">=3.10,<3.14"
 boto3 = "^1.35.44"
 pycryptodome = "^3.20.0"
 google-cloud-secret-manager = "^2.20.2"
-injector = "^0.22.0"
+injector = ">=0.22,<0.24"
 google-auth = "^2.36.0"
 
 [tool.poetry.group.dev.dependencies]
