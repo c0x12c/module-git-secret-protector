@@ -144,9 +144,12 @@ class AesKeyManager:
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
             0o600,
         )
+        # Lock mode to 0600 on the fd before writing — O_CREAT ignores the mode
+        # for a pre-existing file, so without this the secret would briefly land
+        # under the old (e.g. 0644) permissions.
+        os.fchmod(cache_fd, 0o600)
         with os.fdopen(cache_fd, "w") as cache_file:
             cache_file.write(json_data)
-        os.chmod(cache_path, 0o600)
         logger.debug("Cached AES key and IV locally for filter: %s", filter_name)
 
     def load_key_iv_from_cache(self, filter_name: str):
