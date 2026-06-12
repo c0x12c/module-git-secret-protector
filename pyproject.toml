@@ -8,17 +8,17 @@ packages = [{ include = "git_secret_protector", from = "src" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
-boto3 = "^1.35.44"
-pycryptodome = "^3.20.0"
-google-cloud-secret-manager = "^2.20.2"
-injector = "^0.22.0"
-google-auth = "^2.36.0"
+boto3 = "^1.43.27"
+pycryptodome = "^3.23.0"
+google-cloud-secret-manager = "^2.29.0"
+injector = "^0.24.0"
+google-auth = "^2.53.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.3.2"
+pytest = "^9.0.3"
 mock = "^5.1.0"
-pyinstaller = "^6.10.0"
-tomlkit = "^0.13.2"
+pyinstaller = "^6.20.0"
+tomlkit = "^0.15.0"
 
 [tool.poetry.scripts]
 git-secret-protector = "git_secret_protector.main:main"
