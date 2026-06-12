@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 class EncryptionManager:
     @injector.inject
     def __init__(
-            self,
-            git_attributes_parser: GitAttributesParser,
-            key_manager: AesKeyManager,
-            key_rotator: KeyRotator
+        self,
+        git_attributes_parser: GitAttributesParser,
+        key_manager: AesKeyManager,
+        key_rotator: KeyRotator,
     ):
         self.git_attributes_parser = git_attributes_parser
         self.key_manager = key_manager
@@ -59,12 +59,16 @@ class EncryptionManager:
     def encrypt_files(self, filter_name: str):
         try:
             logger.info("Encrypting files for filter: %s", filter_name)
-            files_to_encrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
+            files_to_encrypt = self.git_attributes_parser.get_files_for_filter(
+                filter_name=filter_name
+            )
             if not files_to_encrypt:
                 logging.info(f"No files to encrypt for filter: {filter_name}")
                 return
 
-            self.__get_encryption_handler(filter_name=filter_name).encrypt_files(files=files_to_encrypt)
+            self.__get_encryption_handler(filter_name=filter_name).encrypt_files(
+                files=files_to_encrypt
+            )
             logging.info(f"Successfully encrypted files for filter: {filter_name}")
             print(f"Successfully encrypted files for filter: {filter_name}")
         except Exception as e:
@@ -74,12 +78,16 @@ class EncryptionManager:
     def decrypt_files(self, filter_name: str):
         try:
             logger.info("Decrypting files for filter: %s", filter_name)
-            files_to_decrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
+            files_to_decrypt = self.git_attributes_parser.get_files_for_filter(
+                filter_name=filter_name
+            )
             if not files_to_decrypt:
                 logging.info(f"No files to decrypt for filter: {filter_name}")
                 return
 
-            self.__get_encryption_handler(filter_name=filter_name).decrypt_files(files=files_to_decrypt)
+            self.__get_encryption_handler(filter_name=filter_name).decrypt_files(
+                files=files_to_decrypt
+            )
             logging.info(f"Successfully decrypted files for filter: {filter_name}")
             print(f"Successfully decrypted files for filter: {filter_name}")
         except Exception as e:
@@ -95,22 +103,27 @@ class EncryptionManager:
             return
 
         try:
-            filter_name = self.git_attributes_parser.get_filter_name_for_file(file_name=file_name)
+            filter_name = self.git_attributes_parser.get_filter_name_for_file(
+                file_name=file_name
+            )
             logger.debug("Found filter_name to decrypt: %s", filter_name)
 
             if filter_name is None:
                 logger.error("No filter found for file: %s", file_name)
-                return
+                sys.exit(1)
 
-            encrypted_data = self.__get_encryption_handler(filter_name=filter_name).encrypt_data(input_data)
+            encrypted_data = self.__get_encryption_handler(
+                filter_name=filter_name
+            ).encrypt_data(input_data)
 
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
-            logging.info(f"Successfully encrypted data from stdin for file: {file_name}")
+            logging.info(
+                f"Successfully encrypted data from stdin for file: {file_name}"
+            )
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
-            sys.stdout.buffer.write(input_data)
-            sys.stdout.buffer.flush()
+            sys.exit(1)
 
     def decrypt_stdin(self, file_name):
         logging.info(f"Decrypting data from stdin for file: {file_name}")
@@ -128,12 +141,16 @@ class EncryptionManager:
                 logger.error("No filter found for file: %s", file_name)
                 return
 
-            decrypted_data = self.__get_encryption_handler(filter_name=filter_name).decrypt_data(encrypted_data)
+            decrypted_data = self.__get_encryption_handler(
+                filter_name=filter_name
+            ).decrypt_data(encrypted_data)
             logger.debug("Decrypted file: %s", file_name)
 
             sys.stdout.buffer.write(decrypted_data)
             sys.stdout.buffer.flush()
-            logging.info(f"Successfully decrypted data from stdin for file: {file_name}")
+            logging.info(
+                f"Successfully decrypted data from stdin for file: {file_name}"
+            )
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
             sys.stdout.buffer.write(encrypted_data)
@@ -156,7 +173,9 @@ class EncryptionManager:
             try:
                 self.encrypt_files(filter_name=filter_name)
             except Exception as e:
-                logger.warning("Failed to encrypt files for filter '%s': %s", filter_name, e)
+                logger.warning(
+                    "Failed to encrypt files for filter '%s': %s", filter_name, e
+                )
 
             self.key_manager.remove_key_iv_from_cache(filter_name=filter_name)
             logger.info("Successfully cleaned staged data for filter: %s", filter_name)
@@ -201,29 +220,63 @@ class EncryptionManager:
     @staticmethod
     def __init_filter(filter_name: str):
         # Check for existing Git filters
-        check_clean = subprocess.getoutput(f'git config --get filter.{filter_name}.clean')
-        check_smudge = subprocess.getoutput(f'git config --get filter.{filter_name}.smudge')
+        check_clean = subprocess.getoutput(
+            f"git config --get filter.{filter_name}.clean"
+        )
+        check_smudge = subprocess.getoutput(
+            f"git config --get filter.{filter_name}.smudge"
+        )
 
         logger.info("Setting up Git filters for '%s'", filter_name)
         if check_clean or check_smudge:
+            subprocess.run(
+                ["git", "config", f"filter.{filter_name}.required", "true"], check=True
+            )
             sys.stdout.buffer.write(
-                f"Git filters for '{filter_name}' already exist. Skipping filter setup.".encode('utf-8') + b'\n')
+                f"Git filters for '{filter_name}' already exist. Skipping filter setup.".encode(
+                    "utf-8"
+                )
+                + b"\n"
+            )
             sys.stdout.buffer.flush()
             return
 
         # Set Git filters
-        subprocess.run(['git', 'config', f'filter.{filter_name}.clean', 'git-secret-protector encrypt %f'], check=True)
-        subprocess.run(['git', 'config', f'filter.{filter_name}.smudge', 'git-secret-protector decrypt %f'], check=True)
-        subprocess.run(['git', 'config', f'filter.{filter_name}.required', 'true'], check=True)
-        logger.debug("Git clean & smudge filters for '%s' have been set up successfully.", filter_name)
+        subprocess.run(
+            [
+                "git",
+                "config",
+                f"filter.{filter_name}.clean",
+                "git-secret-protector encrypt %f",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "config",
+                f"filter.{filter_name}.smudge",
+                "git-secret-protector decrypt %f",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", f"filter.{filter_name}.required", "true"], check=True
+        )
+        logger.debug(
+            "Git clean & smudge filters for '%s' have been set up successfully.",
+            filter_name,
+        )
 
     def __get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
-        return AesEncryptionHandler(aes_key=aes_key, iv=iv, magic_header=self.magic_header)
+        return AesEncryptionHandler(
+            aes_key=aes_key, iv=iv, magic_header=self.magic_header
+        )
 
     def __is_encrypted(self, file_path: str):
         try:
-            with open(file_path, 'rb') as file:
+            with open(file_path, "rb") as file:
                 header = file.read(len(self.magic_header))
                 return header == self.magic_header
         except IOError:
