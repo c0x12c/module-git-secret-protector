@@ -1,6 +1,9 @@
 import base64
 import io
+import json
+import os
 import secrets
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -10,6 +13,8 @@ from Crypto.Util.Padding import pad
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.main import show_project_version
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from tests.utils.random_utils import generate_random_string
 
@@ -148,23 +153,83 @@ class TestEncryptionManagerService(unittest.TestCase):
 
         self.assertEqual(stdout_buffer.getvalue(), b"ciphertext")
 
+    def test_pull_aes_key_exits_non_zero_when_retrieve_raises(self):
+        self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("boom")
+
+        with self.assertRaises(SystemExit) as context:
+            self.manager.pull_aes_key("secret")
+
+        self.assertEqual(context.exception.code, 1)
+
+    def test_decrypt_stdin_does_not_exit_when_decryption_raises(self):
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        encrypted_data = b"ciphertext"
+        stdout_buffer = io.BytesIO()
+        stdin = SimpleNamespace(buffer=io.BytesIO(encrypted_data))
+        stdout = SimpleNamespace(buffer=stdout_buffer)
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__get_encryption_handler",
+            side_effect=RuntimeError("boom"),
+        ):
+            with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+                self.manager.decrypt_stdin("secrets.env")
+
+        self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
+
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
-    @patch("git_secret_protector.services.encryption_manager.subprocess.getoutput")
-    def test_setup_filters_sets_required_for_existing_filter(
-        self, mock_getoutput, mock_run
-    ):
+    def test_setup_filters_sets_required_for_existing_filter(self, mock_run):
         self.git_attributes_parser.get_filter_names.return_value = ["secret"]
-        mock_getoutput.side_effect = [
-            "git-secret-protector encrypt %f",
-            "git-secret-protector decrypt %f",
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+            MagicMock(),
         ]
 
         self.manager.setup_filters()
 
-        mock_run.assert_called_once_with(
+        self.assertEqual(
+            mock_run.call_args_list[0].args[0],
+            ["git", "config", "--get", "filter.secret.clean"],
+        )
+        self.assertEqual(
+            mock_run.call_args_list[1].args[0],
+            ["git", "config", "--get", "filter.secret.smudge"],
+        )
+        mock_run.assert_called_with(
             ["git", "config", "filter.secret.required", "true"],
             check=True,
         )
+
+    def test_cache_key_iv_locally_writes_owner_only_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch(
+                "git_secret_protector.crypto.aes_key_manager.get_settings"
+            ) as mock_get_settings:
+                mock_settings = MagicMock()
+                mock_settings.cache_dir = temp_dir
+                mock_settings.module_name = "git-secret-protector"
+                mock_get_settings.return_value = mock_settings
+
+                manager = AesKeyManager()
+                data = json.dumps({"aes_key": "a", "iv": "b"})
+
+                manager.cache_key_iv_locally("secret", data)
+
+                cache_path = os.path.join(temp_dir, "secret_key_iv.json")
+                self.assertEqual(oct(os.stat(cache_path).st_mode & 0o777), "0o600")
+
+
+class TestMain(unittest.TestCase):
+    @patch("git_secret_protector.main.EncryptionManager.show_project_version")
+    @patch("git_secret_protector.main.manager", None)
+    def test_show_project_version_does_not_require_manager(
+        self, mock_show_project_version
+    ):
+        show_project_version(None)
+
+        mock_show_project_version.assert_called_once_with()
 
 
 if __name__ == "__main__":

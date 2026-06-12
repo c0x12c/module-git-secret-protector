@@ -37,6 +37,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
             print(f"AES key setup command failed: {e}")
+            sys.exit(1)
 
     def setup_filters(self):
         logger.info("Setting up filters")
@@ -55,6 +56,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)
             print(f"Pull AES key command failed: {e}")
+            sys.exit(1)
 
     def encrypt_files(self, filter_name: str):
         try:
@@ -74,6 +76,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
             print(f"Encrypt files command failed: {str(e)}")
+            sys.exit(1)
 
     def decrypt_files(self, filter_name: str):
         try:
@@ -93,6 +96,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
             print(f"Decrypt files command failed: {e}")
+            sys.exit(1)
 
     def encrypt_stdin(self, file_name):
         logging.info(f"Encrypting data from stdin for file: {file_name}")
@@ -165,6 +169,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
             print(f"Rotate keys command failed: {e}")
+            sys.exit(1)
 
     def clean_filter(self, filter_name: str):
         try:
@@ -183,6 +188,7 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Clean filter command failed: {e}", exc_info=True)
             print(f"Clean filter command failed: {e}")
+            sys.exit(1)
 
     def status(self):
         try:
@@ -199,6 +205,7 @@ class EncryptionManager:
                     print("  No files found for this filter.")
         except Exception as e:
             print(f"Status command failed: {e}")
+            sys.exit(1)
 
     @staticmethod
     def show_project_version():
@@ -220,12 +227,16 @@ class EncryptionManager:
     @staticmethod
     def __init_filter(filter_name: str):
         # Check for existing Git filters
-        check_clean = subprocess.getoutput(
-            f"git config --get filter.{filter_name}.clean"
-        )
-        check_smudge = subprocess.getoutput(
-            f"git config --get filter.{filter_name}.smudge"
-        )
+        check_clean = subprocess.run(
+            ["git", "config", "--get", f"filter.{filter_name}.clean"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        check_smudge = subprocess.run(
+            ["git", "config", "--get", f"filter.{filter_name}.smudge"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         logger.info("Setting up Git filters for '%s'", filter_name)
         if check_clean or check_smudge:

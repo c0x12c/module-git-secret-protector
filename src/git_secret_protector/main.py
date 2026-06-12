@@ -7,31 +7,47 @@ from git_secret_protector.core.settings import get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
 
-MODULE_FOLDER = '.git_secret_protector'
+MODULE_FOLDER = ".git_secret_protector"
 
-inj = GitSecretProtectorModule.get_injector()
-manager = inj.get(EncryptionManager)
+manager = None
 
 
 def init_module_folder():
-    module_path = Path(get_settings().module_dir)
+    settings = get_settings()
+    module_path = Path(settings.module_dir)
 
     if not module_path.exists():
         module_path.mkdir(parents=True, exist_ok=True)
-        (module_path / 'cache').mkdir(exist_ok=True)
-        (module_path / 'logs').mkdir(exist_ok=True)
+        (module_path / "cache").mkdir(exist_ok=True)
+        (module_path / "logs").mkdir(exist_ok=True)
+    else:
+        (module_path / "cache").mkdir(exist_ok=True)
+        (module_path / "logs").mkdir(exist_ok=True)
+
+    gitignore_path = Path(settings.base_dir) / ".gitignore"
+    gitignore_entry = f"{MODULE_FOLDER}/"
+    existing_lines = []
+
+    if gitignore_path.exists():
+        existing_lines = gitignore_path.read_text().splitlines()
+
+    if gitignore_entry not in existing_lines:
+        with open(gitignore_path, "a") as gitignore_file:
+            if gitignore_path.exists() and gitignore_path.stat().st_size > 0:
+                gitignore_file.write("\n")
+            gitignore_file.write(f"{gitignore_entry}\n")
 
     # Check if config.ini exists, if not, create it with default settings
-    config_file = module_path / 'config.ini'
+    config_file = module_path / "config.ini"
     if not config_file.exists():
         config = configparser.ConfigParser()
-        config['DEFAULT'] = {
-            'module_name': 'git-secret-protector',
-            'log_level': 'WARN',
-            'log_max_size': '1048576'  # 10MB
+        config["DEFAULT"] = {
+            "module_name": "git-secret-protector",
+            "log_level": "WARN",
+            "log_max_size": "1048576",  # 10MB
         }
 
-        with open(config_file, 'w') as configfile:
+        with open(config_file, "w") as configfile:
             config.write(configfile)
 
 
@@ -89,59 +105,83 @@ def status_command(_):
 
 
 def show_project_version(_):
-    manager.show_project_version()
+    EncryptionManager.show_project_version()
 
 
 def main():
-    init_module_folder()
-
-    configure_logging()
     parser = argparse.ArgumentParser(description="Git Secret Protector CLI")
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Add filter commands to the parser
     filter_commands = [
-        ('setup-aes-key', setup_aes_key, "Set up AES key for a filter"),
-        ('pull-aes-key', pull_aes_key, "Pull AES key for a filter"),
-        ('rotate-key', rotate_key, "Rotate AES key and re-encrypt secrets"),
-        ('decrypt-files', decrypt_files_by_filter, "Decrypt files for a specific filter"),
-        ('encrypt-files', encrypt_files_by_filter, "Encrypt all files for a specified filter"),
-        ('clean-filter', clean_filter, "Clean staged data for a specified filter")
+        ("setup-aes-key", setup_aes_key, "Set up AES key for a filter"),
+        ("pull-aes-key", pull_aes_key, "Pull AES key for a filter"),
+        ("rotate-key", rotate_key, "Rotate AES key and re-encrypt secrets"),
+        (
+            "decrypt-files",
+            decrypt_files_by_filter,
+            "Decrypt files for a specific filter",
+        ),
+        (
+            "encrypt-files",
+            encrypt_files_by_filter,
+            "Encrypt all files for a specified filter",
+        ),
+        ("clean-filter", clean_filter, "Clean staged data for a specified filter"),
     ]
 
     # Command to set up Git filters
-    parser_setup_filters_stdin = subparsers.add_parser('setup-filters', help="Set up Git filters in Git config")
+    parser_setup_filters_stdin = subparsers.add_parser(
+        "setup-filters", help="Set up Git filters in Git config"
+    )
     parser_setup_filters_stdin.set_defaults(func=setup_filters)
 
     # Command to decrypt data from stdin
-    parser_decrypt_stdin = subparsers.add_parser('decrypt', help="Decrypt data from stdin")
-    parser_decrypt_stdin.add_argument('file_name', type=str, help="Filename for decryption")
+    parser_decrypt_stdin = subparsers.add_parser(
+        "decrypt", help="Decrypt data from stdin"
+    )
+    parser_decrypt_stdin.add_argument(
+        "file_name", type=str, help="Filename for decryption"
+    )
     parser_decrypt_stdin.set_defaults(func=decrypt_stdin)
 
     # Command to encrypt data from stdin
-    parser_encrypt_stdin = subparsers.add_parser('encrypt', help="Encrypt data from stdin")
-    parser_encrypt_stdin.add_argument('file_name', type=str, help="Filename for encryption")
+    parser_encrypt_stdin = subparsers.add_parser(
+        "encrypt", help="Encrypt data from stdin"
+    )
+    parser_encrypt_stdin.add_argument(
+        "file_name", type=str, help="Filename for encryption"
+    )
     parser_encrypt_stdin.set_defaults(func=encrypt_stdin)
 
     for cmd_name, func, help_text in filter_commands:
         parser_cmd = subparsers.add_parser(cmd_name, help=help_text)
-        parser_cmd.add_argument('filter_name', type=str, nargs='?', help="The filter name")
+        parser_cmd.add_argument(
+            "filter_name", type=str, nargs="?", help="The filter name"
+        )
         parser_cmd.set_defaults(func=func)
 
     # Status command
-    parser_status = subparsers.add_parser('status', help="List all filters and file statuses")
+    parser_status = subparsers.add_parser(
+        "status", help="List all filters and file statuses"
+    )
     parser_status.set_defaults(func=status_command)
 
     # Version command
-    parser_status = subparsers.add_parser('version', help="Show version")
+    parser_status = subparsers.add_parser("version", help="Show version")
     parser_status.set_defaults(func=show_project_version)
 
     args = parser.parse_args()
-    if hasattr(args, 'func'):
+    if hasattr(args, "func"):
+        if args.func is not show_project_version:
+            init_module_folder()
+            configure_logging()
+            global manager
+            manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
         args.func(args)
     else:
         parser.print_help()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
