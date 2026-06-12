@@ -62,6 +62,7 @@ class AesKeyManager:
             data = {
                 "aes_key": base64.b64encode(s=aes_key).decode(encoding="utf-8"),
                 "iv": base64.b64encode(s=iv).decode(encoding="utf-8"),
+                "version": 2,
             }
             json_data = json.dumps(obj=data)
 
