@@ -25,7 +25,9 @@ class AesKeyManager:
     def _get_storage_manager(self):
         if self.storage_manager is None:
             storage_type = self.settings.storage_type.value
-            self.storage_manager = StorageManagerFactory.create(storage_type=storage_type)
+            self.storage_manager = StorageManagerFactory.create(
+                storage_type=storage_type
+            )
         return self.storage_manager
 
     """
@@ -48,24 +50,31 @@ class AesKeyManager:
 
             if self._parameter_exists(parameter_name=parameter_name):
                 logger.error(
-                    f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter.")
-                raise ValueError(f"Parameter with name {parameter_name} already exists.")
+                    f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter."
+                )
+                raise ValueError(
+                    f"Parameter with name {parameter_name} already exists."
+                )
 
             aes_key = os.urandom(self.AES_KEY_SIZE)
             iv = os.urandom(self.IV_SIZE)
 
             data = {
-                'aes_key': base64.b64encode(s=aes_key).decode(encoding='utf-8'),
-                'iv': base64.b64encode(s=iv).decode(encoding='utf-8')
+                "aes_key": base64.b64encode(s=aes_key).decode(encoding="utf-8"),
+                "iv": base64.b64encode(s=iv).decode(encoding="utf-8"),
             }
             json_data = json.dumps(obj=data)
 
             self._get_storage_manager().store(parameter_name, json_data)
 
-            logger.info(f"AES key and IV setup and stored in storage for filter: {filter_name}")
+            logger.info(
+                f"AES key and IV setup and stored in storage for filter: {filter_name}"
+            )
             self.cache_key_iv_locally(filter_name, json_data)
         except Exception as e:
-            raise AesKeyError(f"Failed to setup AES key and IV for filter '{filter_name}': {str(e)}")
+            raise AesKeyError(
+                f"Failed to setup AES key and IV for filter '{filter_name}': {str(e)}"
+            )
 
     """
     Destroys the AES key and initialization vector (IV) associated with the given filter name.
@@ -86,16 +95,22 @@ class AesKeyManager:
         try:
             local_data = self.load_key_iv_from_cache(filter_name=filter_name)
             if local_data:
-                logger.debug("Using locally cached AES key and IV for filter: %s", filter_name)
-                return base64.b64decode(local_data['aes_key']), base64.b64decode(local_data['iv'])
+                logger.debug(
+                    "Using locally cached AES key and IV for filter: %s", filter_name
+                )
+                return base64.b64decode(local_data["aes_key"]), base64.b64decode(
+                    local_data["iv"]
+                )
 
             parameter_name = self._parameter_name(filter_name=filter_name)
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             self.cache_key_iv_locally(filter_name, json.dumps(data))
 
-            return base64.b64decode(data['aes_key']), base64.b64decode(data['iv'])
+            return base64.b64decode(data["aes_key"]), base64.b64decode(data["iv"])
         except Exception as e:
-            raise AesKeyError(f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}")
+            raise AesKeyError(
+                f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}"
+            )
 
     """
     Clears the locally cached AES key and initialization vector (IV) associated with the given filter name.
@@ -113,22 +128,32 @@ class AesKeyManager:
         try:
             parameter_name = self._parameter_name(filter_name=filter_name)
             self._get_storage_manager().delete(name=parameter_name)
-            logger.info(f"Successfully destroyed AES key and IV in storage for filter: {filter_name}")
+            logger.info(
+                f"Successfully destroyed AES key and IV in storage for filter: {filter_name}"
+            )
         except Exception as e:
-            raise AesKeyError(f"Failed to destroy AES key and IV for filter '{filter_name}': {str(e)}")
+            raise AesKeyError(
+                f"Failed to destroy AES key and IV for filter '{filter_name}': {str(e)}"
+            )
 
     def cache_key_iv_locally(self, filter_name: str, json_data: str):
         cache_path = self._cache_path(filter_name=filter_name)
 
-        with open(cache_path, 'w') as cache_file:
+        cache_fd = os.open(
+            cache_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(cache_fd, "w") as cache_file:
             cache_file.write(json_data)
+        os.chmod(cache_path, 0o600)
         logger.debug("Cached AES key and IV locally for filter: %s", filter_name)
 
     def load_key_iv_from_cache(self, filter_name: str):
         cache_path = self._cache_path(filter_name=filter_name)
 
         if os.path.exists(cache_path):
-            with open(cache_path, 'r') as cache_file:
+            with open(cache_path, "r") as cache_file:
                 json_data = cache_file.read()
                 data = json.loads(json_data)
                 return data
@@ -149,11 +174,15 @@ class AesKeyManager:
         try:
             return self._get_storage_manager().exists(parameter_name)
         except Exception as e:
-            logger.error(f"Error while checking existence of parameter {parameter_name}: {e}")
+            logger.error(
+                f"Error while checking existence of parameter {parameter_name}: {e}"
+            )
             return False
 
     def _parameter_name(self, filter_name) -> str:
-        return self._get_storage_manager().parameter_name(module_name=self.module_name, filter_name=filter_name)
+        return self._get_storage_manager().parameter_name(
+            module_name=self.module_name, filter_name=filter_name
+        )
 
     def _cache_path(self, filter_name: str) -> str:
         return os.path.join(self.cache_dir, f"{filter_name}_key_iv.json")
