@@ -309,11 +309,14 @@ class EncryptionManager:
                     f"[WARN] no local key cache for '{filter_name}' (run pull-aes-key)"
                 )
 
+        # Resolving the parameter name forces credential/region resolution
+        # (e.g. an STS call for AWS SSM). It confirms creds + config resolve,
+        # not that the key parameter exists or that a full fetch would succeed.
         try:
             self.key_manager.resolve_parameter_name(filter_names[0])
-            print("[ OK ] backend reachable")
+            print("[ OK ] backend credentials/region resolved")
         except Exception:
-            print("[WARN] backend not reachable / no credentials (offline ok)")
+            print("[WARN] backend credentials/region unresolved (offline ok)")
 
         for filter_name in filter_names:
             files = self.git_attributes_parser.get_files_for_filter(filter_name)
