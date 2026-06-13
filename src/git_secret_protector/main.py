@@ -1,16 +1,25 @@
 import argparse
 import configparser
+import os
 import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
-from git_secret_protector.core.settings import get_settings
+from git_secret_protector.core.settings import Settings, get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
+from git_secret_protector.utils.project_version import get_project_version_from_metadata
 
 MODULE_FOLDER = ".git_secret_protector"
 
 manager = None
+
+
+def _safe_version():
+    try:
+        return get_project_version_from_metadata()
+    except Exception:
+        return "unknown"
 
 
 def init_module_folder():
@@ -68,7 +77,7 @@ def pull_aes_key(args):
 
 def rotate_key(args):
     filter_name = args.filter_name
-    manager.rotate_keys(filter_name=filter_name)
+    manager.rotate_keys(filter_name=filter_name, assume_yes=getattr(args, "yes", False))
 
 
 def decrypt_stdin(args):
@@ -91,11 +100,6 @@ def encrypt_files_by_filter(args):
     manager.encrypt_files(filter_name=filter_name)
 
 
-def destroy_aes_key(args):
-    filter_name = args.filter_name
-    manager.setup_aes_key(filter_name=filter_name)
-
-
 def clean_filter(args):
     filter_name = args.filter_name
     manager.clean_filter(filter_name=filter_name)
@@ -105,19 +109,53 @@ def status_command(_):
     manager.status()
 
 
+def doctor_command(_):
+    sys.exit(manager.doctor())
+
+
 def show_project_version(_):
     EncryptionManager.show_project_version()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Git Secret Protector CLI")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Encrypt selected repository files transparently with Git filters and "
+            "per-filter AES keys."
+        ),
+        epilog=(
+            "Typical workflow (repo owner):\n"
+            "  1. create .gitattributes mapping globs to filters\n"
+            "  2. git-secret-protector setup-filters\n"
+            "  3. git-secret-protector setup-aes-key <filter>\n"
+            "  4. edit/commit — files are encrypted transparently\n"
+            "Team member:\n"
+            "  git-secret-protector pull-aes-key <filter> && "
+            "git-secret-protector setup-filters"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"git-secret-protector {_safe_version()}",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=str,
+        default=None,
+        help=(
+            "Repo root to operate on (overrides auto-detection; same as the "
+            "SECRET_PROTECTOR_BASE_DIR env var). Must precede the subcommand."
+        ),
+    )
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Add filter commands to the parser
     filter_commands = [
         ("setup-aes-key", setup_aes_key, "Set up AES key for a filter"),
         ("pull-aes-key", pull_aes_key, "Pull AES key for a filter"),
-        ("rotate-key", rotate_key, "Rotate AES key and re-encrypt secrets"),
         (
             "decrypt-files",
             decrypt_files_by_filter,
@@ -162,11 +200,30 @@ def main():
         )
         parser_cmd.set_defaults(func=func)
 
+    parser_rotate_key = subparsers.add_parser(
+        "rotate-key", help="Rotate AES key and re-encrypt secrets"
+    )
+    parser_rotate_key.add_argument(
+        "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_rotate_key.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the rotate confirmation prompt",
+    )
+    parser_rotate_key.set_defaults(func=rotate_key)
+
     # Status command
     parser_status = subparsers.add_parser(
         "status", help="List all filters and file statuses"
     )
     parser_status.set_defaults(func=status_command)
+
+    parser_doctor = subparsers.add_parser(
+        "doctor", help="Diagnose the git-secret-protector setup"
+    )
+    parser_doctor.set_defaults(func=doctor_command)
 
     # Version command
     parser_status = subparsers.add_parser("version", help="Show version")
@@ -176,6 +233,16 @@ def main():
     if hasattr(args, "func"):
         try:
             if args.func is not show_project_version:
+                if args.repo_root:
+                    repo_root = Path(args.repo_root).resolve()
+                    if not repo_root.is_dir():
+                        print(
+                            f"Error: --repo-root points to a missing directory: {args.repo_root}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    os.environ[Settings.BASE_DIR_ENV_VAR] = str(repo_root)
+                    os.chdir(repo_root)
                 init_module_folder()
                 configure_logging()
                 global manager

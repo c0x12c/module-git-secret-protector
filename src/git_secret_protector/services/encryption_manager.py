@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,41 @@ class EncryptionManager:
         self.key_rotator = key_rotator
         self.magic_header = get_settings().magic_header.encode()
 
+    def _print_context(self, filter_name=None):
+        settings = get_settings()
+        print(f"Backend:   {settings.storage_type.value}", file=sys.stderr)
+        print(f"Module:    {settings.module_name}", file=sys.stderr)
+        print(f"Repo root: {settings.base_dir}", file=sys.stderr)
+
+        if filter_name is not None:
+            try:
+                path = self.key_manager.resolve_parameter_name(filter_name)
+                print(f"Namespace: {path}", file=sys.stderr)
+            except Exception:
+                pass
+
+    def _require_filter(self, filter_name):
+        if filter_name:
+            return filter_name
+        try:
+            available = self.git_attributes_parser.get_filter_names()
+        except Exception:
+            available = []
+        if available:
+            msg = (
+                f"a filter name is required. Available filters: {', '.join(available)}"
+            )
+        else:
+            msg = (
+                "a filter name is required. No filters defined "
+                "(.gitattributes missing or empty)."
+            )
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(1)
+
     def setup_aes_key(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
+        self._print_context(filter_name)
         try:
             logger.info("Setting up AES key for filter: %s", filter_name)
             self.key_manager.setup_aes_key_and_iv(filter_name)
@@ -36,7 +71,7 @@ class EncryptionManager:
             print(f"Successfully set up AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
-            print(f"AES key setup command failed: {e}")
+            print(f"AES key setup command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def setup_filters(self):
@@ -48,6 +83,8 @@ class EncryptionManager:
         print("Successfully set up filters")
 
     def pull_aes_key(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
+        self._print_context(filter_name)
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
             self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
@@ -55,10 +92,11 @@ class EncryptionManager:
             print(f"Successfully pulled AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)
-            print(f"Pull AES key command failed: {e}")
+            print(f"Pull AES key command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def encrypt_files(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Encrypting files for filter: %s", filter_name)
             files_to_encrypt = self.git_attributes_parser.get_files_for_filter(
@@ -75,10 +113,11 @@ class EncryptionManager:
             print(f"Successfully encrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
-            print(f"Encrypt files command failed: {str(e)}")
+            print(f"Encrypt files command failed: {str(e)}", file=sys.stderr)
             sys.exit(1)
 
     def decrypt_files(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Decrypting files for filter: %s", filter_name)
             files_to_decrypt = self.git_attributes_parser.get_files_for_filter(
@@ -95,7 +134,7 @@ class EncryptionManager:
             print(f"Successfully decrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
-            print(f"Decrypt files command failed: {e}")
+            print(f"Decrypt files command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def encrypt_stdin(self, file_name):
@@ -160,18 +199,36 @@ class EncryptionManager:
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 
-    def rotate_keys(self, filter_name: str):
+    def rotate_keys(self, filter_name: str, assume_yes: bool = False):
+        filter_name = self._require_filter(filter_name)
+        self._print_context(filter_name)
         try:
+            if not assume_yes:
+                try:
+                    answer = input(
+                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
+                    )
+                except EOFError:
+                    # No TTY (CI / piped stdin) and no explicit consent — treat as
+                    # a decline so a destructive rotation never runs unconfirmed.
+                    answer = ""
+                if answer.strip().lower() not in {"y", "yes"}:
+                    print(
+                        "Aborted (no confirmation; pass -y/--yes for non-interactive use).",
+                        file=sys.stderr,
+                    )
+                    return
             rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
             rotator.rotate_key(filter_name)
             logger.info("Key rotation complete for filter: %s", filter_name)
             print(f"Key rotation complete for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
-            print(f"Rotate keys command failed: {e}")
+            print(f"Rotate keys command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def clean_filter(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Cleaning staged data for filter: %s", filter_name)
 
@@ -187,10 +244,11 @@ class EncryptionManager:
             print(f"Successfully cleaned staged data for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Clean filter command failed: {e}", exc_info=True)
-            print(f"Clean filter command failed: {e}")
+            print(f"Clean filter command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def status(self):
+        self._print_context()
         try:
             filter_names = self.git_attributes_parser.get_filter_names()
             for filter_name in filter_names:
@@ -199,13 +257,93 @@ class EncryptionManager:
                 if files:
                     for file in files:
                         encrypted = self.__is_encrypted(file_path=file)
-                        status = "Encrypted" if encrypted else "Decrypted"
+                        status = "Encrypted" if encrypted else "⚠ PLAINTEXT"
                         print(f"  {file}: {status}")
                 else:
                     print("  No files found for this filter.")
         except Exception as e:
-            print(f"Status command failed: {e}")
+            print(f"Status command failed: {e}", file=sys.stderr)
             sys.exit(1)
+
+    def doctor(self) -> int:
+        settings = get_settings()
+        failed = False
+
+        print("[ OK ] Repository context")
+        print(f"  base_dir: {settings.base_dir}")
+        print(f"  backend: {settings.storage_type.value}")
+        print(f"  module_name: {settings.module_name}")
+
+        if os.path.exists(settings.config_file):
+            print(f"[ OK ] config.ini found at {settings.config_file}")
+        else:
+            print("[WARN] config.ini not found (defaults in use)")
+
+        filter_names = []
+        try:
+            filter_names = self.git_attributes_parser.get_filter_names()
+        except Exception:
+            pass
+
+        if not filter_names:
+            print("[WARN] no filters defined in .gitattributes")
+            return 1 if failed else 0
+
+        print(f"[ OK ] filters declared: {', '.join(filter_names)}")
+
+        for filter_name in filter_names:
+            check_clean = subprocess.run(
+                ["git", "config", "--get", f"filter.{filter_name}.clean"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            check_smudge = subprocess.run(
+                ["git", "config", "--get", f"filter.{filter_name}.smudge"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            if check_clean and check_smudge:
+                print(f"[ OK ] filter '{filter_name}' configured in .git/config")
+            else:
+                print(
+                    f"[WARN] filter '{filter_name}' not configured in .git/config (run setup-filters)"
+                )
+
+            if self.key_manager.is_cached(filter_name):
+                print(f"[ OK ] local key cache exists for '{filter_name}'")
+            else:
+                print(
+                    f"[WARN] no local key cache for '{filter_name}' (run pull-aes-key)"
+                )
+
+        # Resolving the parameter name forces credential/region resolution
+        # (e.g. an STS call for AWS SSM). It confirms creds + config resolve,
+        # not that the key parameter exists or that a full fetch would succeed.
+        try:
+            self.key_manager.resolve_parameter_name(filter_names[0])
+            print("[ OK ] backend credentials/region resolved")
+        except Exception:
+            print("[WARN] backend credentials/region unresolved (offline ok)")
+
+        for filter_name in filter_names:
+            files = self.git_attributes_parser.get_files_for_filter(filter_name)
+            plaintext_files = []
+
+            for file_path in files:
+                if not self.__is_encrypted(file_path):
+                    plaintext_files.append(file_path)
+                    failed = True
+                    print(
+                        f"[FAIL] {file_path} is tracked as secret but is PLAINTEXT in the working tree"
+                    )
+
+            if not plaintext_files:
+                print(
+                    f"[ OK ] all tracked secret files are encrypted for '{filter_name}'"
+                )
+
+        return 1 if failed else 0
 
     @staticmethod
     def show_project_version():
@@ -214,7 +352,7 @@ class EncryptionManager:
             print(f"git-secret-protector version: {version}")
         except Exception as e:
             logger.error(f"Failed to get project version: {e}", exc_info=True)
-            print(f"Failed to get project version: {str(e)}")
+            print(f"Failed to get project version: {str(e)}", file=sys.stderr)
 
     @staticmethod
     def _get_poetry_root_path():

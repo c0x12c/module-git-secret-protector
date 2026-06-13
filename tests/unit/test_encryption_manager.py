@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import io
 import json
 import os
@@ -90,6 +91,9 @@ class TestEncryptionManagerService(unittest.TestCase):
     def setUp(self, mock_get_settings):
         mock_settings = MagicMock()
         mock_settings.magic_header = generate_random_string()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
         mock_get_settings.return_value = mock_settings
 
         self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
@@ -100,6 +104,54 @@ class TestEncryptionManagerService(unittest.TestCase):
             key_manager=self.key_manager,
             key_rotator=self.key_rotator,
         )
+
+    def test_guarded_methods_require_filter_and_list_available_filters(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["a", "b"]
+        methods = [
+            ("setup_aes_key", lambda: self.manager.setup_aes_key("")),
+            ("pull_aes_key", lambda: self.manager.pull_aes_key(None)),
+            ("encrypt_files", lambda: self.manager.encrypt_files("")),
+            ("decrypt_files", lambda: self.manager.decrypt_files(None)),
+            ("rotate_keys", lambda: self.manager.rotate_keys("", assume_yes=True)),
+            ("clean_filter", lambda: self.manager.clean_filter(None)),
+        ]
+
+        for name, invoke in methods:
+            with self.subTest(method=name):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    with self.assertRaises(SystemExit) as context:
+                        invoke()
+
+                self.assertEqual(context.exception.code, 1)
+                self.assertIn("Available filters: a, b", stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+
+        self.key_manager.setup_aes_key_and_iv.assert_not_called()
+        self.key_manager.retrieve_key_and_iv.assert_not_called()
+        self.key_manager.remove_key_iv_from_cache.assert_not_called()
+        self.key_rotator.rotate_key.assert_not_called()
+
+    def test_require_filter_handles_missing_gitattributes_without_traceback(self):
+        self.git_attributes_parser.get_filter_names.side_effect = FileNotFoundError(
+            "missing"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                self.manager.pull_aes_key(None)
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertIn("No filters defined", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.key_manager.retrieve_key_and_iv.assert_not_called()
 
     def test_encrypt_stdin_exits_non_zero_and_writes_nothing_when_encryption_raises(
         self,
@@ -155,11 +207,231 @@ class TestEncryptionManagerService(unittest.TestCase):
 
     def test_pull_aes_key_exits_non_zero_when_retrieve_raises(self):
         self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("boom")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
 
-        with self.assertRaises(SystemExit) as context:
-            self.manager.pull_aes_key("secret")
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                self.manager.pull_aes_key("secret")
 
         self.assertEqual(context.exception.code, 1)
+        self.assertNotIn("Pull AES key command failed", stdout.getvalue())
+        self.assertIn("Pull AES key command failed: boom", stderr.getvalue())
+
+    def test_encrypt_files_failure_prints_to_stderr_only(self):
+        self.git_attributes_parser.get_files_for_filter.side_effect = RuntimeError(
+            "boom"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                self.manager.encrypt_files("secret")
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertNotIn("Encrypt files command failed", stdout.getvalue())
+        self.assertIn("Encrypt files command failed: boom", stderr.getvalue())
+
+    def test_status_failure_prints_to_stderr_only(self):
+        self.git_attributes_parser.get_filter_names.side_effect = RuntimeError("boom")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                self.manager.status()
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertNotIn("Status command failed", stdout.getvalue())
+        self.assertIn("Status command failed: boom", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
+    @patch("builtins.input", return_value="n")
+    def test_rotate_keys_returns_on_negative_confirmation(
+        self, mock_input, mock_key_rotator
+    ):
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            self.manager.rotate_keys("secret")
+
+        mock_input.assert_called_once()
+        mock_key_rotator.assert_not_called()
+        self.assertIn("Aborted", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
+    @patch("builtins.input", side_effect=EOFError)
+    def test_rotate_keys_aborts_cleanly_on_eof(self, mock_input, mock_key_rotator):
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            # No SystemExit: EOF (piped/CI stdin) is a decline, not a crash.
+            self.manager.rotate_keys("secret")
+
+        mock_input.assert_called_once()
+        mock_key_rotator.assert_not_called()
+        self.assertIn("Aborted", stderr.getvalue())
+        self.assertNotIn("Rotate keys command failed", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
+    @patch("builtins.input", return_value="y")
+    def test_rotate_keys_proceeds_on_positive_confirmation(
+        self, mock_input, mock_key_rotator
+    ):
+        rotator = mock_key_rotator.return_value
+
+        self.manager.rotate_keys("secret")
+
+        mock_input.assert_called_once()
+        rotator.rotate_key.assert_called_once_with("secret")
+
+    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
+    @patch("builtins.input", side_effect=AssertionError("input should not be called"))
+    def test_rotate_keys_assume_yes_skips_confirmation(
+        self, mock_input, mock_key_rotator
+    ):
+        rotator = mock_key_rotator.return_value
+
+        self.manager.rotate_keys("secret", assume_yes=True)
+
+        mock_input.assert_not_called()
+        rotator.rotate_key.assert_called_once_with("secret")
+
+    def test_status_marks_plaintext_files(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "enc.txt",
+            "plain.txt",
+        ]
+        stdout = io.StringIO()
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            side_effect=[True, False],
+        ):
+            with contextlib.redirect_stdout(stdout):
+                self.manager.status()
+
+        output = stdout.getvalue()
+        self.assertIn("  enc.txt: Encrypted", output)
+        self.assertIn("  plain.txt: ⚠ PLAINTEXT", output)
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_returns_zero_when_all_checks_are_green(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=True,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[ OK ]", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_returns_one_when_plaintext_secret_file_detected(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL]", stdout.getvalue())
+        self.assertIn("PLAINTEXT", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_warns_on_offline_backend_without_failing(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.side_effect = RuntimeError("offline")
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=True,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[WARN] backend", stdout.getvalue())
+
+    def test_doctor_warns_when_gitattributes_missing_and_skips_per_filter_checks(self):
+        self.git_attributes_parser.get_filter_names.side_effect = FileNotFoundError(
+            "missing"
+        )
+        stdout = io.StringIO()
+
+        with patch("os.path.exists", return_value=True):
+            with contextlib.redirect_stdout(stdout):
+                result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        output = stdout.getvalue()
+        self.assertIn("[WARN] no filters defined in .gitattributes", output)
+        self.assertNotIn(".git/config", output)
+        self.key_manager.is_cached.assert_not_called()
+        self.key_manager.resolve_parameter_name.assert_not_called()
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_status_prints_local_namespace_header_without_resolving_storage_path(
+        self, mock_get_settings
+    ):
+        mock_settings = MagicMock()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
+        mock_get_settings.return_value = mock_settings
+        self.git_attributes_parser.get_filter_names.return_value = []
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.manager.status()
+
+        self.key_manager.resolve_parameter_name.assert_not_called()
+        output = stderr.getvalue()
+        self.assertIn("Backend:   AWS_SSM", output)
+        self.assertIn("Module:    git-secret-protector", output)
+        self.assertIn("Repo root: /repo/root", output)
 
     def test_decrypt_stdin_does_not_exit_when_decryption_raises(self):
         self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
