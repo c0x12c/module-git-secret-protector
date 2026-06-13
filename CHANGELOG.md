@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.4.0] - 2026-06-13
+
+- feat(cli): CLI UX/security hardening — namespace surfacing, rotate-key confirm, doctor, errors to stderr (#91)
+
 ## [1.3.0] - 2026-06-13
 
 ### Added
