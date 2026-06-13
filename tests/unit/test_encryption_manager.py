@@ -105,6 +105,54 @@ class TestEncryptionManagerService(unittest.TestCase):
             key_rotator=self.key_rotator,
         )
 
+    def test_guarded_methods_require_filter_and_list_available_filters(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["a", "b"]
+        methods = [
+            ("setup_aes_key", lambda: self.manager.setup_aes_key("")),
+            ("pull_aes_key", lambda: self.manager.pull_aes_key(None)),
+            ("encrypt_files", lambda: self.manager.encrypt_files("")),
+            ("decrypt_files", lambda: self.manager.decrypt_files(None)),
+            ("rotate_keys", lambda: self.manager.rotate_keys("", assume_yes=True)),
+            ("clean_filter", lambda: self.manager.clean_filter(None)),
+        ]
+
+        for name, invoke in methods:
+            with self.subTest(method=name):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    with self.assertRaises(SystemExit) as context:
+                        invoke()
+
+                self.assertEqual(context.exception.code, 1)
+                self.assertIn("Available filters: a, b", stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+
+        self.key_manager.setup_aes_key_and_iv.assert_not_called()
+        self.key_manager.retrieve_key_and_iv.assert_not_called()
+        self.key_manager.remove_key_iv_from_cache.assert_not_called()
+        self.key_rotator.rotate_key.assert_not_called()
+
+    def test_require_filter_handles_missing_gitattributes_without_traceback(self):
+        self.git_attributes_parser.get_filter_names.side_effect = FileNotFoundError(
+            "missing"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                self.manager.pull_aes_key(None)
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertIn("No filters defined", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.key_manager.retrieve_key_and_iv.assert_not_called()
+
     def test_encrypt_stdin_exits_non_zero_and_writes_nothing_when_encryption_raises(
         self,
     ):

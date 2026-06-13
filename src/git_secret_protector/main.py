@@ -1,16 +1,25 @@
 import argparse
 import configparser
+import os
 import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
-from git_secret_protector.core.settings import get_settings
+from git_secret_protector.core.settings import Settings, get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
+from git_secret_protector.utils.project_version import get_project_version_from_metadata
 
 MODULE_FOLDER = ".git_secret_protector"
 
 manager = None
+
+
+def _safe_version():
+    try:
+        return get_project_version_from_metadata()
+    except Exception:
+        return "unknown"
 
 
 def init_module_folder():
@@ -105,7 +114,38 @@ def show_project_version(_):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Git Secret Protector CLI")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Encrypt selected repository files transparently with Git filters and "
+            "per-filter AES keys."
+        ),
+        epilog=(
+            "Typical workflow (repo owner):\n"
+            "  1. create .gitattributes mapping globs to filters\n"
+            "  2. git-secret-protector setup-filters\n"
+            "  3. git-secret-protector setup-aes-key <filter>\n"
+            "  4. edit/commit — files are encrypted transparently\n"
+            "Team member:\n"
+            "  git-secret-protector pull-aes-key <filter> && "
+            "git-secret-protector setup-filters"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"git-secret-protector {_safe_version()}",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=str,
+        default=None,
+        help=(
+            "Repo root to operate on (overrides auto-detection; same as the "
+            "SECRET_PROTECTOR_BASE_DIR env var). Must precede the subcommand."
+        ),
+    )
     subparsers = parser.add_subparsers(help="Available commands")
 
     # Add filter commands to the parser
@@ -184,6 +224,15 @@ def main():
     if hasattr(args, "func"):
         try:
             if args.func is not show_project_version:
+                if args.repo_root:
+                    repo_root = Path(args.repo_root)
+                    if not repo_root.is_dir():
+                        print(
+                            f"Error: --repo-root points to a missing directory: {args.repo_root}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    os.environ[Settings.BASE_DIR_ENV_VAR] = args.repo_root
                 init_module_folder()
                 configure_logging()
                 global manager

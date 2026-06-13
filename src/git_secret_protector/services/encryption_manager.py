@@ -41,7 +41,27 @@ class EncryptionManager:
             except Exception:
                 pass
 
+    def _require_filter(self, filter_name):
+        if filter_name:
+            return filter_name
+        try:
+            available = self.git_attributes_parser.get_filter_names()
+        except Exception:
+            available = []
+        if available:
+            msg = (
+                f"a filter name is required. Available filters: {', '.join(available)}"
+            )
+        else:
+            msg = (
+                "a filter name is required. No filters defined "
+                "(.gitattributes missing or empty)."
+            )
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(1)
+
     def setup_aes_key(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
             logger.info("Setting up AES key for filter: %s", filter_name)
@@ -62,6 +82,7 @@ class EncryptionManager:
         print("Successfully set up filters")
 
     def pull_aes_key(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
@@ -74,6 +95,7 @@ class EncryptionManager:
             sys.exit(1)
 
     def encrypt_files(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Encrypting files for filter: %s", filter_name)
             files_to_encrypt = self.git_attributes_parser.get_files_for_filter(
@@ -94,6 +116,7 @@ class EncryptionManager:
             sys.exit(1)
 
     def decrypt_files(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Decrypting files for filter: %s", filter_name)
             files_to_decrypt = self.git_attributes_parser.get_files_for_filter(
@@ -176,6 +199,7 @@ class EncryptionManager:
             sys.stdout.buffer.flush()
 
     def rotate_keys(self, filter_name: str, assume_yes: bool = False):
+        filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
             if not assume_yes:
@@ -195,6 +219,7 @@ class EncryptionManager:
             sys.exit(1)
 
     def clean_filter(self, filter_name: str):
+        filter_name = self._require_filter(filter_name)
         try:
             logger.info("Cleaning staged data for filter: %s", filter_name)
 
