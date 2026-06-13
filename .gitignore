@@ -1,2 +1,5 @@
 /dist/
 /.idea/
+
+# Personal, machine-local Claude guidance (never committed)
+CLAUDE.local.md
