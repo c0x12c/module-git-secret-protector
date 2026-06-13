@@ -234,14 +234,15 @@ def main():
         try:
             if args.func is not show_project_version:
                 if args.repo_root:
-                    repo_root = Path(args.repo_root)
+                    repo_root = Path(args.repo_root).resolve()
                     if not repo_root.is_dir():
                         print(
                             f"Error: --repo-root points to a missing directory: {args.repo_root}",
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                    os.environ[Settings.BASE_DIR_ENV_VAR] = args.repo_root
+                    os.environ[Settings.BASE_DIR_ENV_VAR] = str(repo_root)
+                    os.chdir(repo_root)
                 init_module_folder()
                 configure_logging()
                 global manager

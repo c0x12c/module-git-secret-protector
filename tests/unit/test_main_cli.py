@@ -89,6 +89,20 @@ def test_repo_root_before_subcommand_missing_directory_errors(tmp_path):
     assert "missing directory" in result.stderr
 
 
+def test_repo_root_before_doctor_scans_target_repo(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    _init_git_repo(target)
+    (target / ".gitattributes").write_text("secret.env filter=app\n")
+    (target / "secret.env").write_text("PLAINTEXT\n")
+
+    result = _run_main(["--repo-root", str(target), "doctor"], tmp_path)
+
+    assert result.returncode == 1
+    assert "[FAIL]" in result.stdout
+    assert "PLAINTEXT" in result.stdout
+
+
 def test_help_includes_typical_workflow_epilog(tmp_path):
     result = _run_main(["--help"], tmp_path)
 
