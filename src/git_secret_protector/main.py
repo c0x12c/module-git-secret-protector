@@ -68,7 +68,7 @@ def pull_aes_key(args):
 
 def rotate_key(args):
     filter_name = args.filter_name
-    manager.rotate_keys(filter_name=filter_name)
+    manager.rotate_keys(filter_name=filter_name, assume_yes=getattr(args, "yes", False))
 
 
 def decrypt_stdin(args):
@@ -89,11 +89,6 @@ def decrypt_files_by_filter(args):
 def encrypt_files_by_filter(args):
     filter_name = args.filter_name
     manager.encrypt_files(filter_name=filter_name)
-
-
-def destroy_aes_key(args):
-    filter_name = args.filter_name
-    manager.setup_aes_key(filter_name=filter_name)
 
 
 def clean_filter(args):
@@ -117,7 +112,6 @@ def main():
     filter_commands = [
         ("setup-aes-key", setup_aes_key, "Set up AES key for a filter"),
         ("pull-aes-key", pull_aes_key, "Pull AES key for a filter"),
-        ("rotate-key", rotate_key, "Rotate AES key and re-encrypt secrets"),
         (
             "decrypt-files",
             decrypt_files_by_filter,
@@ -161,6 +155,20 @@ def main():
             "filter_name", type=str, nargs="?", help="The filter name"
         )
         parser_cmd.set_defaults(func=func)
+
+    parser_rotate_key = subparsers.add_parser(
+        "rotate-key", help="Rotate AES key and re-encrypt secrets"
+    )
+    parser_rotate_key.add_argument(
+        "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_rotate_key.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the rotate confirmation prompt",
+    )
+    parser_rotate_key.set_defaults(func=rotate_key)
 
     # Status command
     parser_status = subparsers.add_parser(

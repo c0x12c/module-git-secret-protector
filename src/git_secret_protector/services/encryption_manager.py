@@ -28,7 +28,21 @@ class EncryptionManager:
         self.key_rotator = key_rotator
         self.magic_header = get_settings().magic_header.encode()
 
+    def _print_context(self, filter_name=None):
+        settings = get_settings()
+        print(f"Backend:   {settings.storage_type.value}", file=sys.stderr)
+        print(f"Module:    {settings.module_name}", file=sys.stderr)
+        print(f"Repo root: {settings.base_dir}", file=sys.stderr)
+
+        if filter_name is not None:
+            try:
+                path = self.key_manager.resolve_parameter_name(filter_name)
+                print(f"Namespace: {path}", file=sys.stderr)
+            except Exception:
+                pass
+
     def setup_aes_key(self, filter_name: str):
+        self._print_context(filter_name)
         try:
             logger.info("Setting up AES key for filter: %s", filter_name)
             self.key_manager.setup_aes_key_and_iv(filter_name)
@@ -36,7 +50,7 @@ class EncryptionManager:
             print(f"Successfully set up AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
-            print(f"AES key setup command failed: {e}")
+            print(f"AES key setup command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def setup_filters(self):
@@ -48,6 +62,7 @@ class EncryptionManager:
         print("Successfully set up filters")
 
     def pull_aes_key(self, filter_name: str):
+        self._print_context(filter_name)
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
             self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
@@ -55,7 +70,7 @@ class EncryptionManager:
             print(f"Successfully pulled AES key for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)
-            print(f"Pull AES key command failed: {e}")
+            print(f"Pull AES key command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def encrypt_files(self, filter_name: str):
@@ -75,7 +90,7 @@ class EncryptionManager:
             print(f"Successfully encrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
-            print(f"Encrypt files command failed: {str(e)}")
+            print(f"Encrypt files command failed: {str(e)}", file=sys.stderr)
             sys.exit(1)
 
     def decrypt_files(self, filter_name: str):
@@ -95,7 +110,7 @@ class EncryptionManager:
             print(f"Successfully decrypted files for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
-            print(f"Decrypt files command failed: {e}")
+            print(f"Decrypt files command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def encrypt_stdin(self, file_name):
@@ -160,15 +175,23 @@ class EncryptionManager:
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 
-    def rotate_keys(self, filter_name: str):
+    def rotate_keys(self, filter_name: str, assume_yes: bool = False):
+        self._print_context(filter_name)
         try:
+            if not assume_yes:
+                answer = input(
+                    f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
+                )
+                if answer.strip().lower() not in {"y", "yes"}:
+                    print("Aborted.", file=sys.stderr)
+                    return
             rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
             rotator.rotate_key(filter_name)
             logger.info("Key rotation complete for filter: %s", filter_name)
             print(f"Key rotation complete for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
-            print(f"Rotate keys command failed: {e}")
+            print(f"Rotate keys command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def clean_filter(self, filter_name: str):
@@ -187,10 +210,11 @@ class EncryptionManager:
             print(f"Successfully cleaned staged data for filter: {filter_name}")
         except Exception as e:
             logger.error(f"Clean filter command failed: {e}", exc_info=True)
-            print(f"Clean filter command failed: {e}")
+            print(f"Clean filter command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     def status(self):
+        self._print_context()
         try:
             filter_names = self.git_attributes_parser.get_filter_names()
             for filter_name in filter_names:
@@ -199,12 +223,12 @@ class EncryptionManager:
                 if files:
                     for file in files:
                         encrypted = self.__is_encrypted(file_path=file)
-                        status = "Encrypted" if encrypted else "Decrypted"
+                        status = "Encrypted" if encrypted else "⚠ PLAINTEXT"
                         print(f"  {file}: {status}")
                 else:
                     print("  No files found for this filter.")
         except Exception as e:
-            print(f"Status command failed: {e}")
+            print(f"Status command failed: {e}", file=sys.stderr)
             sys.exit(1)
 
     @staticmethod
@@ -214,7 +238,7 @@ class EncryptionManager:
             print(f"git-secret-protector version: {version}")
         except Exception as e:
             logger.error(f"Failed to get project version: {e}", exc_info=True)
-            print(f"Failed to get project version: {str(e)}")
+            print(f"Failed to get project version: {str(e)}", file=sys.stderr)
 
     @staticmethod
     def _get_poetry_root_path():
