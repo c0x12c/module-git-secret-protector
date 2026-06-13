@@ -5,62 +5,105 @@ from enum import Enum
 
 
 class StorageType(Enum):
-    AWS_SSM = 'AWS_SSM'
-    GCP_SECRET = 'GCP_SECRET'
+    AWS_SSM = "AWS_SSM"
+    GCP_SECRET = "GCP_SECRET"
 
 
 @dataclass
 class Settings:
     BASE_DIR_LOOKUP_FOLDER = ".git"
+    MODULE_MARKER = ".git_secret_protector"
+    BASE_DIR_ENV_VAR = "SECRET_PROTECTOR_BASE_DIR"
 
-    _instance: 'Settings' = field(default=None, init=False, repr=False, compare=False)
-    module_folder: str = '.git_secret_protector'
+    _instance: "Settings" = field(default=None, init=False, repr=False, compare=False)
+    module_folder: str = ".git_secret_protector"
     base_dir: str = field(init=False)
     module_dir: str = field(init=False)
     config_file: str = field(init=False)
     cache_dir: str = field(init=False)
     log_dir: str = field(init=False)
-    module_name: str = 'git-secret-protector'
+    module_name: str = "git-secret-protector"
     log_file: str = field(init=False)
-    log_level: str = 'INFO'
+    log_level: str = "INFO"
     log_max_size: int = 1048576  # 10MB
     log_backup_count: int = 3
-    magic_header: str = 'ENCRYPTED'
+    magic_header: str = "ENCRYPTED"
     storage_type: StorageType = StorageType.AWS_SSM
     config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
         self.base_dir = self._find_base_dir()
         self.module_dir = os.path.join(self.base_dir, self.module_folder)
-        self.config_file = os.path.join(self.module_dir, 'config.ini')
-        self.cache_dir = os.path.join(self.module_dir, 'cache')
-        self.log_dir = os.path.join(self.module_dir, 'logs')
-        self.log_file = os.path.join(self.log_dir, 'git_secret_protector.log')
+        self.config_file = os.path.join(self.module_dir, "config.ini")
+        self.cache_dir = os.path.join(self.module_dir, "cache")
+        self.log_dir = os.path.join(self.module_dir, "logs")
+        self.log_file = os.path.join(self.log_dir, "git_secret_protector.log")
         self.config = configparser.ConfigParser()
         self._load_config()
 
     @staticmethod
-    def _find_base_dir():
+    def _walk_up(name, require_dir=False):
         current_dir = os.getcwd()
-        while current_dir != os.path.dirname(current_dir):  # Traverse up to the root directory
-            possible_dir = os.path.join(current_dir, Settings.BASE_DIR_LOOKUP_FOLDER)
-            if os.path.exists(possible_dir):
+        while True:
+            possible_path = os.path.join(current_dir, name)
+            if os.path.exists(possible_path) and (
+                not require_dir or os.path.isdir(possible_path)
+            ):
                 return current_dir
-            current_dir = os.path.dirname(current_dir)
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir == current_dir:
+                return None
+            current_dir = parent_dir
+
+    @staticmethod
+    def _find_base_dir():
+        base_dir_override = os.environ.get(Settings.BASE_DIR_ENV_VAR)
+        if base_dir_override:
+            if os.path.isdir(base_dir_override):
+                return base_dir_override
+            raise FileNotFoundError(
+                f"{Settings.BASE_DIR_ENV_VAR} points to a missing directory: {base_dir_override}"
+            )
+
+        marker_dir = Settings._walk_up(Settings.MODULE_MARKER, require_dir=True)
+        if marker_dir:
+            return marker_dir
+
+        bootstrap_repo_dir = Settings._walk_up(Settings.BASE_DIR_LOOKUP_FOLDER)
+        if bootstrap_repo_dir:
+            return bootstrap_repo_dir
+
         raise FileNotFoundError(
-            "The git-secret-protector module folder was not found in any ascendant directories. Please ensure the module is set up correctly.")
+            "git-secret-protector must be run inside a git repository, but no .git directory "
+            "was found in the current directory or any parent. Set "
+            "SECRET_PROTECTOR_BASE_DIR to override."
+        )
 
     def _load_config(self):
         if os.path.exists(self.config_file):
             self.config.read(self.config_file)
-            self.module_name = self.config.get('DEFAULT', 'module_name', fallback=self.module_name)
-            self.log_file = self.config.get('DEFAULT', 'log_file', fallback=self.log_file)
-            self.log_level = self.config.get('DEFAULT', 'log_level', fallback=self.log_level)
-            self.log_max_size = self.config.getint('DEFAULT', 'log_max_size', fallback=self.log_max_size)
-            self.log_backup_count = self.config.getint('DEFAULT', 'log_backup_count', fallback=self.log_backup_count)
-            self.magic_header = self.config.get('DEFAULT', 'magic_header', fallback=self.magic_header)
+            self.module_name = self.config.get(
+                "DEFAULT", "module_name", fallback=self.module_name
+            )
+            self.log_file = self.config.get(
+                "DEFAULT", "log_file", fallback=self.log_file
+            )
+            self.log_level = self.config.get(
+                "DEFAULT", "log_level", fallback=self.log_level
+            )
+            self.log_max_size = self.config.getint(
+                "DEFAULT", "log_max_size", fallback=self.log_max_size
+            )
+            self.log_backup_count = self.config.getint(
+                "DEFAULT", "log_backup_count", fallback=self.log_backup_count
+            )
+            self.magic_header = self.config.get(
+                "DEFAULT", "magic_header", fallback=self.magic_header
+            )
 
-            storage_type_str = self.config.get('DEFAULT', 'storage_type', fallback=self.storage_type.value)
+            storage_type_str = self.config.get(
+                "DEFAULT", "storage_type", fallback=self.storage_type.value
+            )
             if storage_type_str in [member.value for member in StorageType]:
                 self.storage_type = StorageType(storage_type_str)
             else:
