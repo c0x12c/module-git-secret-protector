@@ -47,7 +47,7 @@ The tool is a CLI that integrates with git's smudge/clean filter mechanism to tr
 
 **Configuration** (`core/settings.py`):
 - `Settings` is a singleton loaded at import time via `get_settings()`.
-- It walks up the directory tree looking for `.git/` to find the repo root — raises `FileNotFoundError` if not in a git repo.
+- `_find_base_dir()` resolves the repo root by precedence: `SECRET_PROTECTOR_BASE_DIR` env override (must be an existing dir) → walk up for an existing `.git_secret_protector/` marker → walk up for the nearest `.git` (bootstrap) → else raise `FileNotFoundError`. Marker-first is deliberate: in nested repos/submodules a bare `.git` walk would resolve to the *inner* repo and silently run on default config from the wrong SSM namespace. `git rev-parse` is intentionally not used (it returns the innermost toplevel — the same bug).
 - `storage_type` in `config.ini` controls the backend: `AWS_SSM` (default) or `GCP_SECRET`.
 
 **Dependency injection** (`context/module.py`):
