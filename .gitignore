@@ -1,5 +1,22 @@
 /dist/
 /.idea/
 
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tool runtime (per-repo cache, logs, config)
+/.git_secret_protector/
+
+# Agent tooling (local, machine-specific)
+/.agent/
+/.codex/
+
 # Personal, machine-local Claude guidance (never committed)
 CLAUDE.local.md
