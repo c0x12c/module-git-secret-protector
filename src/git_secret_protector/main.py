@@ -1,5 +1,6 @@
 import argparse
 import configparser
+import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
@@ -173,12 +174,16 @@ def main():
 
     args = parser.parse_args()
     if hasattr(args, "func"):
-        if args.func is not show_project_version:
-            init_module_folder()
-            configure_logging()
-            global manager
-            manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
-        args.func(args)
+        try:
+            if args.func is not show_project_version:
+                init_module_folder()
+                configure_logging()
+                global manager
+                manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
+            args.func(args)
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
     else:
         parser.print_help()
 
