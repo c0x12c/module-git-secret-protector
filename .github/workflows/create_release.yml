@@ -1,7 +1,17 @@
-name: Create Minor Release
+name: Create Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
   build:
@@ -40,6 +50,7 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git config --global user.name "github-actions"
 
-          ./tools/create_release.sh minor
+          ./tools/create_release.sh "$RELEASE_TYPE"
         env:
           GITHUB_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
