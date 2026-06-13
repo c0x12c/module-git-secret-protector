@@ -81,30 +81,10 @@ class AwsSsmStorageManager(StorageManagerInterface):
         except Exception as e:
             error_message = str(e)
             if "ParameterNotFound" in error_message:
-                if self.region in name:
-                    return self._handle_legacy_parameter(parameter=name)
                 raise StorageError(f"Parameter not found [name={name}]") from e
             raise StorageError(
                 f"Failed to retrieve parameter [name={name}]: {error_message}"
             ) from e
-
-    def _handle_legacy_parameter(self, parameter: str) -> str:
-        legacy_parameter = parameter.replace(
-            f"/encryption/{self.account_id}/{self.region}/",
-            f"/encryption/{self.account_id}/",
-        )
-        logger.warning(
-            f"Parameter '{parameter}' not found. Attempting to retrieve from legacy parameter '{legacy_parameter}'."
-        )
-
-        result = self.retrieve(name=legacy_parameter)
-
-        logger.info(
-            f"Legacy parameter '{legacy_parameter}' found. Copying to new parameter: '{parameter}'"
-        )
-        self.store(parameter, result)
-
-        return result
 
     def delete(self, name: str) -> None:
         try:
