@@ -304,6 +304,99 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertIn("  enc.txt: Encrypted", output)
         self.assertIn("  plain.txt: ⚠ PLAINTEXT", output)
 
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_returns_zero_when_all_checks_are_green(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=True,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[ OK ]", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_returns_one_when_plaintext_secret_file_detected(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL]", stdout.getvalue())
+        self.assertIn("PLAINTEXT", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_warns_on_offline_backend_without_failing(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.side_effect = RuntimeError("offline")
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=True,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[WARN] backend", stdout.getvalue())
+
+    def test_doctor_warns_when_gitattributes_missing_and_skips_per_filter_checks(self):
+        self.git_attributes_parser.get_filter_names.side_effect = FileNotFoundError(
+            "missing"
+        )
+        stdout = io.StringIO()
+
+        with patch("os.path.exists", return_value=True):
+            with contextlib.redirect_stdout(stdout):
+                result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        output = stdout.getvalue()
+        self.assertIn("[WARN] no filters defined in .gitattributes", output)
+        self.assertNotIn(".git/config", output)
+        self.key_manager.is_cached.assert_not_called()
+        self.key_manager.resolve_parameter_name.assert_not_called()
+
     @patch("git_secret_protector.services.encryption_manager.get_settings")
     def test_status_prints_local_namespace_header_without_resolving_storage_path(
         self, mock_get_settings

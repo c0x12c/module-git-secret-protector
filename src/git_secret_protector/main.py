@@ -109,6 +109,10 @@ def status_command(_):
     manager.status()
 
 
+def doctor_command(_):
+    sys.exit(manager.doctor())
+
+
 def show_project_version(_):
     EncryptionManager.show_project_version()
 
@@ -215,6 +219,11 @@ def main():
         "status", help="List all filters and file statuses"
     )
     parser_status.set_defaults(func=status_command)
+
+    parser_doctor = subparsers.add_parser(
+        "doctor", help="Diagnose the git-secret-protector setup"
+    )
+    parser_doctor.set_defaults(func=doctor_command)
 
     # Version command
     parser_status = subparsers.add_parser("version", help="Show version")

@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -255,6 +256,83 @@ class EncryptionManager:
         except Exception as e:
             print(f"Status command failed: {e}", file=sys.stderr)
             sys.exit(1)
+
+    def doctor(self) -> int:
+        settings = get_settings()
+        failed = False
+
+        print("[ OK ] Repository context")
+        print(f"  base_dir: {settings.base_dir}")
+        print(f"  backend: {settings.storage_type.value}")
+        print(f"  module_name: {settings.module_name}")
+
+        if os.path.exists(settings.config_file):
+            print(f"[ OK ] config.ini found at {settings.config_file}")
+        else:
+            print("[WARN] config.ini not found (defaults in use)")
+
+        filter_names = []
+        try:
+            filter_names = self.git_attributes_parser.get_filter_names()
+        except Exception:
+            pass
+
+        if not filter_names:
+            print("[WARN] no filters defined in .gitattributes")
+            return 1 if failed else 0
+
+        print(f"[ OK ] filters declared: {', '.join(filter_names)}")
+
+        for filter_name in filter_names:
+            check_clean = subprocess.run(
+                ["git", "config", "--get", f"filter.{filter_name}.clean"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            check_smudge = subprocess.run(
+                ["git", "config", "--get", f"filter.{filter_name}.smudge"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            if check_clean and check_smudge:
+                print(f"[ OK ] filter '{filter_name}' configured in .git/config")
+            else:
+                print(
+                    f"[WARN] filter '{filter_name}' not configured in .git/config (run setup-filters)"
+                )
+
+            if self.key_manager.is_cached(filter_name):
+                print(f"[ OK ] local key cache exists for '{filter_name}'")
+            else:
+                print(
+                    f"[WARN] no local key cache for '{filter_name}' (run pull-aes-key)"
+                )
+
+        try:
+            self.key_manager.resolve_parameter_name(filter_names[0])
+            print("[ OK ] backend reachable")
+        except Exception:
+            print("[WARN] backend not reachable / no credentials (offline ok)")
+
+        for filter_name in filter_names:
+            files = self.git_attributes_parser.get_files_for_filter(filter_name)
+            plaintext_files = []
+
+            for file_path in files:
+                if not self.__is_encrypted(file_path):
+                    plaintext_files.append(file_path)
+                    failed = True
+                    print(
+                        f"[FAIL] {file_path} is tracked as secret but is PLAINTEXT in the working tree"
+                    )
+
+            if not plaintext_files:
+                print(
+                    f"[ OK ] all tracked secret files are encrypted for '{filter_name}'"
+                )
+
+        return 1 if failed else 0
 
     @staticmethod
     def show_project_version():

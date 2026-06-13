@@ -191,5 +191,8 @@ class AesKeyManager:
     def resolve_parameter_name(self, filter_name) -> str:
         return self._parameter_name(filter_name=filter_name)
 
+    def is_cached(self, filter_name) -> bool:
+        return os.path.exists(self._cache_path(filter_name))
+
     def _cache_path(self, filter_name: str) -> str:
         return os.path.join(self.cache_dir, f"{filter_name}_key_iv.json")
