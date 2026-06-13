@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.3.0] - 2026-06-13
+
+### Added
+- Authenticated deterministic encryption (v2): HKDF-SHA256 derives domain-separated enc/mac/iv subkeys; content-derived IV keeps identical plaintext git-stable; AES-256-CTR with encrypt-then-HMAC-SHA256. Backward compatible — legacy v1 (AES-CBC) blobs still decrypt. (#83)
+
+### Changed
+- Harden repository base-dir detection: marker-first precedence with a `SECRET_PROTECTOR_BASE_DIR` env override, preventing silent misconfiguration in nested repos/submodules. (#86)
+- Upgrade direct dependencies to latest stable, secure versions. (#82)
+
+### Removed
+- Drop the legacy SSM parameter-path fallback in `retrieve()`; `ParameterNotFound` now raises immediately. (#88)
+
+### Fixed
+- Emit a clean CLI error (instead of a crash) when run outside a git repository; isolate the gitattributes parser tests. (#87)
+
 ## [1.2.4] - 2025-03-30
 - Bump version to v1.2.4
 
