@@ -204,11 +204,19 @@ class EncryptionManager:
         self._print_context(filter_name)
         try:
             if not assume_yes:
-                answer = input(
-                    f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
-                )
+                try:
+                    answer = input(
+                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
+                    )
+                except EOFError:
+                    # No TTY (CI / piped stdin) and no explicit consent — treat as
+                    # a decline so a destructive rotation never runs unconfirmed.
+                    answer = ""
                 if answer.strip().lower() not in {"y", "yes"}:
-                    print("Aborted.", file=sys.stderr)
+                    print(
+                        "Aborted (no confirmation; pass -y/--yes for non-interactive use).",
+                        file=sys.stderr,
+                    )
                     return
             rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
             rotator.rotate_key(filter_name)

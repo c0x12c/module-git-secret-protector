@@ -258,7 +258,21 @@ class TestEncryptionManagerService(unittest.TestCase):
 
         mock_input.assert_called_once()
         mock_key_rotator.assert_not_called()
-        self.assertIn("Aborted.", stderr.getvalue())
+        self.assertIn("Aborted", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
+    @patch("builtins.input", side_effect=EOFError)
+    def test_rotate_keys_aborts_cleanly_on_eof(self, mock_input, mock_key_rotator):
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            # No SystemExit: EOF (piped/CI stdin) is a decline, not a crash.
+            self.manager.rotate_keys("secret")
+
+        mock_input.assert_called_once()
+        mock_key_rotator.assert_not_called()
+        self.assertIn("Aborted", stderr.getvalue())
+        self.assertNotIn("Rotate keys command failed", stderr.getvalue())
 
     @patch("git_secret_protector.services.encryption_manager.KeyRotator")
     @patch("builtins.input", return_value="y")
