@@ -1,4 +1,5 @@
 import base64
+import configparser
 import contextlib
 import io
 import json
@@ -739,6 +740,124 @@ class TestMain(unittest.TestCase):
         show_project_version(None)
 
         mock_show_project_version.assert_called_once_with(None, None)
+
+
+class TestInitConfig(unittest.TestCase):
+    """Unit tests for EncryptionManager.init_config staticmethod."""
+
+    def _make_mock_settings(self, tmp_dir):
+        """Return a mock Settings pointing at tmp_dir."""
+        mock_settings = MagicMock()
+        module_dir = os.path.join(tmp_dir, ".git_secret_protector")
+        mock_settings.base_dir = tmp_dir
+        mock_settings.module_dir = module_dir
+        mock_settings.config_file = os.path.join(module_dir, "config.ini")
+        return mock_settings
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_init_config_writes_config_when_none_exists(self, mock_get_settings):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_get_settings.return_value = self._make_mock_settings(tmp_dir)
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                rc = EncryptionManager.init_config(
+                    backend="GCP_SECRET", module_name="x", assume_yes=True
+                )
+
+            self.assertEqual(rc, 0)
+            config_file = os.path.join(tmp_dir, ".git_secret_protector", "config.ini")
+            self.assertTrue(os.path.exists(config_file))
+            cfg = configparser.ConfigParser()
+            cfg.read(config_file)
+            self.assertEqual(cfg["DEFAULT"]["storage_type"], "GCP_SECRET")
+            self.assertEqual(cfg["DEFAULT"]["module_name"], "x")
+            self.assertIn("Initialized", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_init_config_assume_yes_no_force_skips_existing(self, mock_get_settings):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_settings = self._make_mock_settings(tmp_dir)
+            mock_get_settings.return_value = mock_settings
+            # Pre-create config
+            module_dir = mock_settings.module_dir
+            os.makedirs(module_dir, exist_ok=True)
+            config_file = mock_settings.config_file
+            original_content = "[DEFAULT]\nmodule_name = original\n"
+            with open(config_file, "w") as f:
+                f.write(original_content)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = EncryptionManager.init_config(assume_yes=True, force=False)
+
+            self.assertEqual(rc, 0)
+            # File must not have been modified
+            with open(config_file) as f:
+                self.assertEqual(f.read(), original_content)
+            self.assertIn("--force", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_init_config_force_overwrites_existing(self, mock_get_settings):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_settings = self._make_mock_settings(tmp_dir)
+            mock_get_settings.return_value = mock_settings
+            module_dir = mock_settings.module_dir
+            os.makedirs(module_dir, exist_ok=True)
+            config_file = mock_settings.config_file
+            with open(config_file, "w") as f:
+                f.write("[DEFAULT]\nmodule_name = old\n")
+
+            rc = EncryptionManager.init_config(
+                backend="GCP_SECRET",
+                module_name="new-module",
+                assume_yes=True,
+                force=True,
+            )
+
+            self.assertEqual(rc, 0)
+            cfg = configparser.ConfigParser()
+            cfg.read(config_file)
+            self.assertEqual(cfg["DEFAULT"]["module_name"], "new-module")
+            self.assertEqual(cfg["DEFAULT"]["storage_type"], "GCP_SECRET")
+
+    @patch("builtins.input", side_effect=EOFError)
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_init_config_interactive_eof_declines_overwrite(
+        self, mock_get_settings, mock_input
+    ):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_settings = self._make_mock_settings(tmp_dir)
+            mock_get_settings.return_value = mock_settings
+            module_dir = mock_settings.module_dir
+            os.makedirs(module_dir, exist_ok=True)
+            config_file = mock_settings.config_file
+            original_content = "[DEFAULT]\nmodule_name = original\n"
+            with open(config_file, "w") as f:
+                f.write(original_content)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = EncryptionManager.init_config(assume_yes=False, force=False)
+
+            self.assertEqual(rc, 0)
+            with open(config_file) as f:
+                self.assertEqual(f.read(), original_content)
+            self.assertIn("Keeping existing config", stderr.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_init_config_invalid_explicit_backend_returns_1(self, mock_get_settings):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_get_settings.return_value = self._make_mock_settings(tmp_dir)
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                rc = EncryptionManager.init_config(
+                    backend="INVALID_BACKEND", assume_yes=True
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("INVALID_BACKEND", stderr.getvalue())
 
 
 if __name__ == "__main__":

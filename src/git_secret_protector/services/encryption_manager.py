@@ -1,3 +1,4 @@
+import configparser
 import logging
 import os
 import subprocess
@@ -8,7 +9,7 @@ import injector
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.core.output import Output
-from git_secret_protector.core.settings import get_settings
+from git_secret_protector.core.settings import StorageType, get_settings
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.services.key_rotator import KeyRotator
@@ -606,6 +607,100 @@ class EncryptionManager:
             logger.error(f"Failed to get project version: {e}", exc_info=True)
             output.error(f"Failed to get project version: {str(e)}")
             output.result({"ok": False, "command": "version", "error": str(e)})
+
+    @staticmethod
+    def init_config(
+        backend=None, module_name=None, assume_yes=False, force=False
+    ) -> int:
+        """Write .git_secret_protector/config.ini interactively or non-interactively.
+
+        Returns 0 on success or non-destructive skip, 1 on invalid input.
+        """
+        settings = get_settings()
+        pre_existing = os.path.exists(settings.config_file)
+
+        if pre_existing and not force:
+            if assume_yes:
+                print(
+                    "config.ini already exists; pass --force to overwrite.",
+                    file=sys.stderr,
+                )
+                return 0
+            # Interactive: mirror the EOF-safe pattern from rotate_keys.
+            try:
+                answer = input(
+                    f"config.ini already exists at {settings.config_file}. Overwrite? [y/N] "
+                )
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() not in {"y", "yes"}:
+                print("Keeping existing config.", file=sys.stderr)
+                return 0
+
+        # Resolve backend.
+        valid_backends = {m.value for m in StorageType}
+        if backend is not None:
+            if backend not in valid_backends:
+                print(
+                    f"Error: invalid backend '{backend}'. Choose from: {', '.join(sorted(valid_backends))}",
+                    file=sys.stderr,
+                )
+                return 1
+        elif assume_yes:
+            backend = "AWS_SSM"
+        else:
+            try:
+                raw = input("Storage backend [AWS_SSM/GCP_SECRET] (default AWS_SSM): ")
+            except EOFError:
+                raw = ""
+            backend = raw.strip() or "AWS_SSM"
+            if backend not in valid_backends:
+                # One reprompt.
+                try:
+                    raw2 = input(
+                        f"Invalid backend '{backend}'. Choose AWS_SSM or GCP_SECRET: "
+                    )
+                except EOFError:
+                    raw2 = ""
+                backend = raw2.strip() or ""
+                if backend not in valid_backends:
+                    print(
+                        f"Error: invalid backend '{backend}'. Choose from: {', '.join(sorted(valid_backends))}",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+        # Resolve module_name.
+        if module_name is not None:
+            pass  # use as-is
+        elif assume_yes:
+            module_name = "git-secret-protector"
+        else:
+            try:
+                raw = input("Module name (default git-secret-protector): ")
+            except EOFError:
+                raw = ""
+            module_name = raw.strip() or "git-secret-protector"
+
+        # Create directories.
+        module_dir = Path(settings.module_dir)
+        (module_dir / "cache").mkdir(parents=True, exist_ok=True)
+        (module_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+        # Write config.
+        cfg = configparser.ConfigParser()
+        cfg["DEFAULT"] = {
+            "module_name": module_name,
+            "storage_type": backend,
+            "log_level": "WARN",
+            "log_max_size": "1048576",
+        }
+        with open(settings.config_file, "w") as fh:
+            cfg.write(fh)
+
+        print(f"Initialized git-secret-protector config at {settings.config_file}")
+        print(f"  backend: {backend}\n  module_name: {module_name}")
+        return 0
 
     @staticmethod
     def _get_poetry_root_path():

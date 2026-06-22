@@ -206,6 +206,24 @@ def _run_filter(args, cwd, stdin_bytes):
     )
 
 
+def test_init_creates_config_in_fresh_git_repo(tmp_path):
+    """init --yes in a bare git repo (no .git_secret_protector) must create config.ini."""
+    import configparser
+
+    _init_git_repo(tmp_path)
+    result = _run_main(
+        ["init", "--yes", "--backend", "GCP_SECRET", "--module-name", "demo"],
+        tmp_path,
+    )
+    assert result.returncode == 0, f"init failed: {result.stderr}"
+    config_file = tmp_path / ".git_secret_protector" / "config.ini"
+    assert config_file.exists(), "config.ini was not created"
+    cfg = configparser.ConfigParser()
+    cfg.read(str(config_file))
+    assert cfg["DEFAULT"]["storage_type"] == "GCP_SECRET"
+    assert cfg["DEFAULT"]["module_name"] == "demo"
+
+
 def test_encrypt_decrypt_stdout_is_pure_bytes_under_all_flags(tmp_path):
     """encrypt/decrypt stdout must equal exact payload bytes for every flag combo."""
     repo = tmp_path / "repo"

@@ -118,6 +118,17 @@ def show_project_version(args, output=None):
     EncryptionManager.show_project_version(args, output)
 
 
+def init_command(args):
+    sys.exit(
+        EncryptionManager.init_config(
+            backend=getattr(args, "backend", None),
+            module_name=getattr(args, "module_name", None),
+            assume_yes=getattr(args, "yes", False),
+            force=getattr(args, "force", False),
+        )
+    )
+
+
 def main():
     # Shared parent inherited by both the top-level parser and every subparser.
     # SUPPRESS means an absent flag sets NO attribute, so a subparser parse
@@ -263,6 +274,37 @@ def main():
     )
     parser_version.set_defaults(func=show_project_version)
 
+    # Init command - writes config.ini interactively
+    parser_init = subparsers.add_parser(
+        "init",
+        help="Initialize git-secret-protector config (writes config.ini)",
+        parents=[common],
+    )
+    parser_init.add_argument(
+        "--backend",
+        choices=["AWS_SSM", "GCP_SECRET"],
+        default=None,
+        help="Storage backend (default: prompt or AWS_SSM with --yes)",
+    )
+    parser_init.add_argument(
+        "--module-name",
+        dest="module_name",
+        default=None,
+        help="Module name written into config.ini (default: prompt or git-secret-protector with --yes)",
+    )
+    parser_init.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Non-interactive: accept all defaults, skip prompts",
+    )
+    parser_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing config.ini without prompting",
+    )
+    parser_init.set_defaults(func=init_command)
+
     args = parser.parse_args()
     if not hasattr(args, "func"):
         parser.print_help()
@@ -279,7 +321,7 @@ def main():
     )
 
     try:
-        if args.func is not show_project_version:
+        if args.func not in (show_project_version, init_command):
             if getattr(args, "repo_root", None):
                 repo_root = Path(args.repo_root).resolve()
                 if not repo_root.is_dir():
@@ -296,8 +338,10 @@ def main():
             global manager
             manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
             args.func(args)
-        else:
+        elif args.func is show_project_version:
             show_project_version(args, output)
+        else:
+            args.func(args)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
