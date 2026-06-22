@@ -108,3 +108,27 @@ def test_help_includes_typical_workflow_epilog(tmp_path):
 
     assert result.returncode == 0
     assert "Typical workflow" in result.stdout
+
+
+def test_quiet_and_verbose_conflict_exits_2(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    result = _run_main(
+        ["--repo-root", str(repo), "--quiet", "--verbose", "status"], tmp_path
+    )
+    assert result.returncode == 2
+    assert "quiet" in result.stderr.lower()
+
+
+def test_json_flag_after_subcommand_parses(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    result = _run_main(["--repo-root", str(repo), "status", "--json"], tmp_path)
+    assert result.returncode == 0
+    import json
+
+    json.loads(result.stdout)  # stdout is a valid JSON document
