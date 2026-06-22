@@ -357,10 +357,8 @@ class EncryptionManager:
             v2_handler.decrypt_file(file)
             v2_handler.encrypt_file(file)
 
-        # Fail-safe: update scheme metadata only after all blobs are v2
-        self.key_manager.set_scheme(filter_name, "v2")
-
-        # Verify-after: each file must be encrypted and have the v2 version byte
+        # Verify-after: each file must be encrypted and have the v2 version byte.
+        # set_scheme is called only after this passes so the blob stays v1 on failure.
         v2_byte = AesEncryptionHandler.V2
         failed_files = []
         for file in files:
@@ -390,6 +388,9 @@ class EncryptionManager:
                 )
             )
             sys.exit(1)
+
+        # Fail-safe: flip the blob to v2 only after all files are verified v2.
+        self.key_manager.set_scheme(filter_name, "v2")
 
         msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
         self.output.info(msg)

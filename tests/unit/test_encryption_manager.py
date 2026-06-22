@@ -1160,7 +1160,7 @@ class TestUpgradeScheme(unittest.TestCase):
 
     @patch("git_secret_protector.services.encryption_manager.AesEncryptionHandler")
     def test_verify_after_failure_exits_1(self, mock_handler_cls):
-        """If post-upgrade verify finds a file not v2, sys.exit(1)."""
+        """If post-upgrade verify finds a file not v2: sys.exit(1) AND set_scheme NOT called (blob stays v1)."""
         aes_key = b"\x00" * 32
         iv = b"\x01" * 16
         self.key_manager.get_scheme.return_value = "v1"
@@ -1190,6 +1190,8 @@ class TestUpgradeScheme(unittest.TestCase):
                     self.manager.upgrade_scheme("secret", assume_yes=True)
 
         self.assertEqual(ctx.exception.code, 1)
+        # Blob must stay v1 on verify failure - set_scheme must NOT have been called.
+        self.key_manager.set_scheme.assert_not_called()
 
 
 if __name__ == "__main__":
