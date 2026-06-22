@@ -20,6 +20,10 @@ class Output:
     def verbose(self):
         return self._verbose
 
+    @property
+    def quiet(self):
+        return self._quiet
+
     def info(self, message):
         if self._quiet or self._json:
             return

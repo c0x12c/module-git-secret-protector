@@ -39,7 +39,7 @@ class EncryptionManager:
         return {"ok": False, "command": command, "error": error, **fields}
 
     def _print_context(self, filter_name=None):
-        if self.output._quiet:
+        if self.output.quiet:
             return
         settings = get_settings()
         self.output.error(f"Backend:   {settings.storage_type.value}")
@@ -490,6 +490,7 @@ class EncryptionManager:
                         "check": "git_config",
                         "status": "ok",
                         "detail": f"filter '{filter_name}' configured in .git/config",
+                        "filter": filter_name,
                     }
                 )
             else:
@@ -498,6 +499,7 @@ class EncryptionManager:
                         "check": "git_config",
                         "status": "warn",
                         "detail": f"filter '{filter_name}' not configured in .git/config (run setup-filters)",
+                        "filter": filter_name,
                     }
                 )
 
@@ -507,6 +509,7 @@ class EncryptionManager:
                         "check": "key_cache",
                         "status": "ok",
                         "detail": f"local key cache exists for '{filter_name}'",
+                        "filter": filter_name,
                     }
                 )
             else:
@@ -515,6 +518,7 @@ class EncryptionManager:
                         "check": "key_cache",
                         "status": "warn",
                         "detail": f"no local key cache for '{filter_name}' (run pull-aes-key)",
+                        "filter": filter_name,
                     }
                 )
 
@@ -552,6 +556,7 @@ class EncryptionManager:
                             "check": "plaintext_scan",
                             "status": "fail",
                             "detail": f"{file_path} is tracked as secret but is PLAINTEXT in the working tree",
+                            "filter": filter_name,
                         }
                     )
 
@@ -561,6 +566,7 @@ class EncryptionManager:
                         "check": "plaintext_scan",
                         "status": "ok",
                         "detail": f"all tracked secret files are encrypted for '{filter_name}'",
+                        "filter": filter_name,
                     }
                 )
 

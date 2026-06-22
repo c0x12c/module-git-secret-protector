@@ -670,6 +670,47 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertTrue(any(c["status"] == "fail" for c in payload["checks"]))
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_per_filter_checks_distinguishable_with_two_filters(
+        self, mock_run
+    ):
+        # Two filters must each appear as `filter` key on every per-filter check so
+        # a machine consumer can distinguish which filter each check belongs to.
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["alpha", "beta"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        # subprocess.run called twice per filter (clean + smudge) = 4 calls total
+        mock_run.side_effect = [
+            MagicMock(stdout="x\n"),
+            MagicMock(stdout="y\n"),
+            MagicMock(stdout="x\n"),
+            MagicMock(stdout="y\n"),
+        ]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        per_filter_checks = [
+            c
+            for c in payload["checks"]
+            if c.get("check") in ("git_config", "key_cache", "plaintext_scan")
+        ]
+        # Every per-filter check must carry a `filter` key
+        for c in per_filter_checks:
+            self.assertIn("filter", c, f"missing 'filter' key on check: {c}")
+        # Both filter names must appear
+        filter_values = {c["filter"] for c in per_filter_checks}
+        self.assertIn("alpha", filter_values)
+        self.assertIn("beta", filter_values)
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_doctor_human_text_unchanged(self, mock_run):
         self.git_attributes_parser.get_filter_names.return_value = ["secret"]
         self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]

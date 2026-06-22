@@ -51,3 +51,7 @@ class TestOutput(unittest.TestCase):
     def test_result_noop_in_human_mode(self):
         out, err = self._capture(lambda: Output().result({"ok": True}))
         self.assertEqual(out, "")
+
+    def test_quiet_property(self):
+        self.assertTrue(Output(quiet=True).quiet)
+        self.assertFalse(Output().quiet)
