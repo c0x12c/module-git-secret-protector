@@ -1137,6 +1137,27 @@ class TestUpgradeScheme(unittest.TestCase):
         self.assertEqual(payload["counts"]["reencrypted"], 2)
         self.assertEqual(payload["counts"]["total"], 2)
 
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_upgrade_scheme_v1_calls_print_context(self, mock_get_settings):
+        """upgrade_scheme calls _print_context with the filter name on the v1->v2 path."""
+        mock_settings = MagicMock()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
+        mock_get_settings.return_value = mock_settings
+
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.retrieve_key_and_iv.return_value = (b"\x00" * 32, b"\x01" * 16)
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+
+        with patch.object(self.manager, "_print_context") as mock_print_ctx:
+            # No files to re-encrypt; assume_yes skips the confirm prompt.
+            # set_scheme is called with no files - that's fine, we only care about
+            # _print_context being called before anything else.
+            self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        mock_print_ctx.assert_called_once_with("secret")
+
     @patch("git_secret_protector.services.encryption_manager.AesEncryptionHandler")
     def test_verify_after_failure_exits_1(self, mock_handler_cls):
         """If post-upgrade verify finds a file not v2, sys.exit(1)."""

@@ -299,6 +299,42 @@ class TestAesKeyManagerScheme(unittest.TestCase):
         stored_json = self.mock_storage_manager.store.call_args[0][1]
         self.assertEqual(json.loads(stored_json)["version"], 1)
 
+    def test_set_scheme_v1_writes_version_1(self):
+        """set_scheme('v1') stores version 1 in backend (locks the mapping)."""
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=2)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "v1")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        self.assertEqual(json.loads(stored_json)["version"], 1)
+
+    def test_set_scheme_v2_writes_version_2(self):
+        """set_scheme('v2') stores version 2 in backend (locks the mapping)."""
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=1)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "v2")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        self.assertEqual(json.loads(stored_json)["version"], 2)
+
+    def test_set_scheme_unknown_defaults_to_v2(self):
+        """set_scheme with an unrecognised string defaults to version 2 (safe default)."""
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=1)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "unknown")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        self.assertEqual(json.loads(stored_json)["version"], 2)
+
     def test_set_scheme_updates_local_cache(self):
         filter_name = secrets.token_hex(8)
         original_blob = self._make_blob(version=1)

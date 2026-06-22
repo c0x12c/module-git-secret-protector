@@ -192,7 +192,7 @@ class AesKeyManager:
             parameter_name = self._parameter_name(filter_name=filter_name)
             # Backend is authoritative - always reload from there
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
-            data["version"] = 2 if scheme == "v2" else 1
+            data["version"] = 1 if scheme == "v1" else 2
             json_data = json.dumps(data)
             self._get_storage_manager().store(parameter_name, json_data)
             self.cache_key_iv_locally(filter_name, json_data)

@@ -317,6 +317,7 @@ class EncryptionManager:
 
     def upgrade_scheme(self, filter_name: str, assume_yes: bool = False):
         filter_name = self._require_filter(filter_name)
+        self._print_context(filter_name)
         scheme = self.key_manager.get_scheme(filter_name)
         files = self.git_attributes_parser.get_files_for_filter(filter_name)
         total = len(files)
