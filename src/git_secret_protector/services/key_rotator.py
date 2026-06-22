@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 class KeyRotator:
     @injector.inject
-    def __init__(self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser):
+    def __init__(
+        self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser
+    ):
         self.aes_key_manager = key_manager
         self.git_attributes_parser = git_attributes_parser
         self.magic_header = get_settings().magic_header.encode()
@@ -21,27 +23,52 @@ class KeyRotator:
         try:
             logger.info("Starting key and IV rotation for filter: %s", filter_name)
 
-            # Step 1: Retrieve the current AES key and IV
-            current_aes_key, current_iv = self.aes_key_manager.retrieve_key_and_iv(filter_name=filter_name)
+            # Step 1: Read the filter's scheme BEFORE any changes so rotation preserves it.
+            # A v1 filter must stay v1 after rotation; silently upgrading would break old clients.
+            scheme = self.aes_key_manager.get_scheme(filter_name)
 
-            # Step 2: Decrypt all files using the current AES key and IV
+            # Step 1b: Retrieve the current AES key and IV
+            current_aes_key, current_iv = self.aes_key_manager.retrieve_key_and_iv(
+                filter_name=filter_name
+            )
 
-            files_to_re_encrypt = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
+            # Step 2: Decrypt all files using the current AES key and IV.
+            # Decryption is version-byte-authoritative (dispatches on the file's wire bytes),
+            # so no scheme override is needed here.
+            files_to_re_encrypt = self.git_attributes_parser.get_files_for_filter(
+                filter_name=filter_name
+            )
 
-            decryption_manager = AesEncryptionHandler(aes_key=current_aes_key, iv=current_iv, magic_header=self.magic_header)
+            decryption_manager = AesEncryptionHandler(
+                aes_key=current_aes_key, iv=current_iv, magic_header=self.magic_header
+            )
             decryption_manager.decrypt_files(files=files_to_re_encrypt)
 
-            # Step 3: Generate and store a new AES key and IV
-            self.aes_key_manager.setup_aes_key_and_iv(filter_name=filter_name)
+            # Step 3: Generate and store a new AES key and IV, preserving the filter's scheme.
+            self.aes_key_manager.setup_aes_key_and_iv(
+                filter_name=filter_name, scheme=scheme
+            )
 
             # Step 4: Retrieve the new AES key and IV
-            new_aes_key, new_iv = self.aes_key_manager.retrieve_key_and_iv(filter_name=filter_name)
+            new_aes_key, new_iv = self.aes_key_manager.retrieve_key_and_iv(
+                filter_name=filter_name
+            )
 
-            # Step 5: Encrypt all files using the new AES key and IV
-            encryption_manager = AesEncryptionHandler(aes_key=new_aes_key, iv=new_iv, magic_header=self.magic_header)
+            # Step 5: Encrypt all files using the new AES key and IV with the preserved scheme.
+            encryption_manager = AesEncryptionHandler(
+                aes_key=new_aes_key,
+                iv=new_iv,
+                magic_header=self.magic_header,
+                scheme=scheme,
+            )
             encryption_manager.encrypt_files(files=files_to_re_encrypt)
 
-            logger.info("Key and IV rotation and re-encryption complete for filter: %s", filter_name)
+            logger.info(
+                "Key and IV rotation and re-encryption complete for filter: %s",
+                filter_name,
+            )
         except Exception as e:
-            logger.error("Failed to rotate key and IV for filter %s: %s", filter_name, e)
+            logger.error(
+                "Failed to rotate key and IV for filter %s: %s", filter_name, e
+            )
             raise
