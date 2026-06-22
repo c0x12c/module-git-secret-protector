@@ -128,60 +128,120 @@ class EncryptionManager:
             )
             sys.exit(1)
 
-    def encrypt_files(self, filter_name: str):
+    def encrypt_files(self, filter_name: str, emit: bool = True):
         filter_name = self._require_filter(filter_name)
         try:
             logger.info("Encrypting files for filter: %s", filter_name)
-            files_to_encrypt = self.git_attributes_parser.get_files_for_filter(
+            files = self.git_attributes_parser.get_files_for_filter(
                 filter_name=filter_name
             )
-            if not files_to_encrypt:
+            if not files:
                 logging.info(f"No files to encrypt for filter: {filter_name}")
-                return
+                if emit:
+                    msg = f"No files to encrypt for filter: {filter_name}"
+                    self.output.info(msg)
+                    self.output.result(
+                        self._envelope_ok(
+                            "encrypt-files",
+                            filter=filter_name,
+                            counts={"encrypted": 0, "skipped": 0, "total": 0},
+                            files=[],
+                            message=msg,
+                        )
+                    )
+                return {"encrypted": 0, "skipped": 0, "total": 0}
 
-            self.__get_encryption_handler(filter_name=filter_name).encrypt_files(
-                files=files_to_encrypt
-            )
+            handler = self.__get_encryption_handler(filter_name=filter_name)
+            total = len(files)
+            results = []
+            counts = {"encrypted": 0, "skipped": 0, "total": total}
+            for i, file in enumerate(files, 1):
+                self.output.progress(f"[{i}/{total}] {file}")
+                was_encrypted = self.__is_encrypted(file_path=file)
+                handler.encrypt_file(file)
+                action = "skipped" if was_encrypted else "encrypted"
+                counts[action] += 1
+                results.append({"path": file, "action": action})
+
             logging.info(f"Successfully encrypted files for filter: {filter_name}")
-            msg = f"Successfully encrypted files for filter: {filter_name}"
-            self.output.info(msg)
-            self.output.result(
-                self._envelope_ok("encrypt-files", filter=filter_name, message=msg)
-            )
+            if emit:
+                msg = f"Successfully encrypted files for filter: {filter_name}"
+                self.output.info(msg)
+                self.output.result(
+                    self._envelope_ok(
+                        "encrypt-files",
+                        filter=filter_name,
+                        counts=counts,
+                        files=results,
+                        message=msg,
+                    )
+                )
+            return counts
         except Exception as e:
             logger.error(f"Encrypt files command failed: {e}", exc_info=True)
             self.output.error(f"Encrypt files command failed: {str(e)}")
-            self.output.result(
-                self._envelope_err("encrypt-files", str(e), filter=filter_name)
-            )
+            if emit:
+                self.output.result(
+                    self._envelope_err("encrypt-files", str(e), filter=filter_name)
+                )
             sys.exit(1)
 
-    def decrypt_files(self, filter_name: str):
+    def decrypt_files(self, filter_name: str, emit: bool = True):
         filter_name = self._require_filter(filter_name)
         try:
             logger.info("Decrypting files for filter: %s", filter_name)
-            files_to_decrypt = self.git_attributes_parser.get_files_for_filter(
+            files = self.git_attributes_parser.get_files_for_filter(
                 filter_name=filter_name
             )
-            if not files_to_decrypt:
+            if not files:
                 logging.info(f"No files to decrypt for filter: {filter_name}")
-                return
+                if emit:
+                    msg = f"No files to decrypt for filter: {filter_name}"
+                    self.output.info(msg)
+                    self.output.result(
+                        self._envelope_ok(
+                            "decrypt-files",
+                            filter=filter_name,
+                            counts={"decrypted": 0, "skipped": 0, "total": 0},
+                            files=[],
+                            message=msg,
+                        )
+                    )
+                return {"decrypted": 0, "skipped": 0, "total": 0}
 
-            self.__get_encryption_handler(filter_name=filter_name).decrypt_files(
-                files=files_to_decrypt
-            )
+            handler = self.__get_encryption_handler(filter_name=filter_name)
+            total = len(files)
+            results = []
+            counts = {"decrypted": 0, "skipped": 0, "total": total}
+            for i, file in enumerate(files, 1):
+                self.output.progress(f"[{i}/{total}] {file}")
+                is_encrypted = self.__is_encrypted(file_path=file)
+                handler.decrypt_file(file)
+                action = "decrypted" if is_encrypted else "skipped"
+                counts[action] += 1
+                results.append({"path": file, "action": action})
+
             logging.info(f"Successfully decrypted files for filter: {filter_name}")
-            msg = f"Successfully decrypted files for filter: {filter_name}"
-            self.output.info(msg)
-            self.output.result(
-                self._envelope_ok("decrypt-files", filter=filter_name, message=msg)
-            )
+            if emit:
+                msg = f"Successfully decrypted files for filter: {filter_name}"
+                self.output.info(msg)
+                self.output.result(
+                    self._envelope_ok(
+                        "decrypt-files",
+                        filter=filter_name,
+                        counts=counts,
+                        files=results,
+                        message=msg,
+                    )
+                )
+            return counts
         except Exception as e:
             logger.error(f"Decrypt files command failed: {e}", exc_info=True)
             self.output.error(f"Decrypt files command failed: {e}")
-            self.output.result(
-                self._envelope_err("decrypt-files", str(e), filter=filter_name)
-            )
+            if emit:
+                self.output.result(
+                    self._envelope_err("decrypt-files", str(e), filter=filter_name)
+                )
             sys.exit(1)
 
     def encrypt_stdin(self, file_name):
@@ -294,10 +354,10 @@ class EncryptionManager:
             logger.info("Cleaning staged data for filter: %s", filter_name)
 
             try:
-                self.encrypt_files(filter_name=filter_name)
-            except Exception as e:
+                self.encrypt_files(filter_name=filter_name, emit=False)
+            except SystemExit:
                 logger.warning(
-                    "Failed to encrypt files for filter '%s': %s", filter_name, e
+                    "Failed to encrypt files for filter '%s' during clean", filter_name
                 )
 
             self.key_manager.remove_key_iv_from_cache(filter_name=filter_name)

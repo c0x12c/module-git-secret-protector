@@ -548,6 +548,64 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertEqual(payload["command"], "setup-filters")
         self.assertIn("no attrs", payload["error"])
 
+    def test_encrypt_files_progress_and_counts_json(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "a.secret",
+            "b.secret",
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__get_encryption_handler"
+        ) as h, patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            side_effect=[False, True],
+        ):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.manager.encrypt_files("secret")
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["counts"], {"encrypted": 1, "skipped": 1, "total": 2})
+        self.assertEqual(err.getvalue(), "")  # progress suppressed under json
+
+    def test_encrypt_files_progress_to_stderr_in_normal(self):
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "a.secret",
+            "b.secret",
+        ]
+        err = io.StringIO()
+        with patch.object(
+            self.manager, "_EncryptionManager__get_encryption_handler"
+        ), patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            return_value=False,
+        ):
+            with contextlib.redirect_stderr(err):
+                self.manager.encrypt_files("secret")
+        self.assertIn("[1/2] a.secret", err.getvalue())
+        self.assertIn("[2/2] b.secret", err.getvalue())
+
+    def test_clean_filter_no_nested_envelope(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.secret"]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__get_encryption_handler"
+        ), patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            return_value=False,
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.clean_filter("secret")
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["command"], "clean-filter")  # not encrypt-files
+
 
 class TestMain(unittest.TestCase):
     @patch("git_secret_protector.main.EncryptionManager.show_project_version")
