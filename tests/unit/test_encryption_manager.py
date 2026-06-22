@@ -492,6 +492,45 @@ class TestEncryptionManagerService(unittest.TestCase):
                 cache_path = os.path.join(temp_dir, "secret_key_iv.json")
                 self.assertEqual(oct(os.stat(cache_path).st_mode & 0o777), "0o600")
 
+    def test_setup_aes_key_json_envelope(self):
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with contextlib.redirect_stdout(out):
+            self.manager.setup_aes_key("secret")
+        payload = json.loads(out.getvalue())
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "command": "setup-aes-key",
+                "filter": "secret",
+                "message": "Successfully set up AES key for filter: secret",
+            },
+        )
+
+    def test_setup_aes_key_json_error_envelope_and_exit(self):
+        from git_secret_protector.core.output import Output
+
+        self.key_manager.setup_aes_key_and_iv.side_effect = RuntimeError("boom")
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.setup_aes_key("secret")
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["command"], "setup-aes-key")
+        self.assertIn("boom", payload["error"])
+
+    def test_setup_aes_key_human_text_unchanged(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.manager.setup_aes_key("secret")
+        self.assertIn("Successfully set up AES key for filter: secret", out.getvalue())
+
 
 class TestMain(unittest.TestCase):
     @patch("git_secret_protector.main.EncryptionManager.show_project_version")
@@ -501,7 +540,7 @@ class TestMain(unittest.TestCase):
     ):
         show_project_version(None)
 
-        mock_show_project_version.assert_called_once_with()
+        mock_show_project_version.assert_called_once_with(None, None)
 
 
 if __name__ == "__main__":
