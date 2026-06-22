@@ -233,6 +233,62 @@ git-secret-protector --json status   # flag position before or after subcommand 
 
 Logs are stored in the `.git_secret_protector/logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
 
+### 6. Encryption Scheme Versioning
+
+`git-secret-protector` supports two encryption schemes:
+
+- **v2** (default) - authenticated AES-256-CTR + HMAC-SHA256. This is the secure default for all new filters.
+- **v1** (legacy) - unauthenticated AES-CBC, kept only for backward compatibility with clients older than 1.4.0 that cannot read v2-encrypted files.
+
+Decryption automatically handles both formats. Any file encrypted with v1 is still readable after you set up a v2 key, so the migration is safe to perform at any time.
+
+#### Setting the scheme when creating a key
+
+By default, `setup-aes-key` creates a v2 key:
+
+```sh
+git-secret-protector setup-aes-key <filter_name>
+```
+
+To create a v1 key for a filter that still has pre-1.4.0 clients:
+
+```sh
+git-secret-protector setup-aes-key <filter_name> --scheme v1
+```
+
+> **SECURITY NOTE:** v1 is unauthenticated. An attacker with write access to the ciphertext can tamper with it without detection. Use `--scheme v1` only when you have no other option (old clients that cannot be upgraded). Migrate away from v1 as soon as all clients are on 1.4.0 or later (see `upgrade-scheme` below).
+
+#### Migrating a filter from v1 to v2
+
+Once all clients on a repository are on 1.4.0 or later, run:
+
+```sh
+git-secret-protector upgrade-scheme <filter_name>
+```
+
+This command:
+- Re-encrypts all files matched by the filter using v2.
+- Updates the stored key blob so future encryptions also use v2.
+- Is confirm-gated (use `-y` / `--yes` to skip the prompt in automation).
+- Is idempotent - running it on an already-v2 filter is a no-op.
+- Is one-way - there is no downgrade command.
+
+#### Checking the active scheme
+
+`status` shows the active scheme for each filter:
+
+```sh
+git-secret-protector status
+```
+
+`doctor` also shows the scheme and flags any v1 filter as a `[WARN]`:
+
+```sh
+git-secret-protector doctor
+```
+
+A filter using v1 is reported as `[WARN]` to prompt migration; a v2 filter reports `[ OK ]`.
+
 ## Development
 
 ### Running Tests
