@@ -416,16 +416,35 @@ class EncryptionManager:
     def doctor(self) -> int:
         settings = get_settings()
         failed = False
+        checks = []
 
-        print("[ OK ] Repository context")
-        print(f"  base_dir: {settings.base_dir}")
-        print(f"  backend: {settings.storage_type.value}")
-        print(f"  module_name: {settings.module_name}")
+        # Repository context - stored as a special multi-line block in detail
+        repo_lines = (
+            f"Repository context\n"
+            f"  base_dir: {settings.base_dir}\n"
+            f"  backend: {settings.storage_type.value}\n"
+            f"  module_name: {settings.module_name}"
+        )
+        checks.append(
+            {"check": "repository_context", "status": "ok", "detail": repo_lines}
+        )
 
         if os.path.exists(settings.config_file):
-            print(f"[ OK ] config.ini found at {settings.config_file}")
+            checks.append(
+                {
+                    "check": "config_ini",
+                    "status": "ok",
+                    "detail": f"config.ini found at {settings.config_file}",
+                }
+            )
         else:
-            print("[WARN] config.ini not found (defaults in use)")
+            checks.append(
+                {
+                    "check": "config_ini",
+                    "status": "warn",
+                    "detail": "config.ini not found (defaults in use)",
+                }
+            )
 
         filter_names = []
         try:
@@ -434,10 +453,24 @@ class EncryptionManager:
             pass
 
         if not filter_names:
-            print("[WARN] no filters defined in .gitattributes")
-            return 1 if failed else 0
+            checks.append(
+                {
+                    "check": "filters_declared",
+                    "status": "warn",
+                    "detail": "no filters defined in .gitattributes",
+                }
+            )
+            exit_code = 1 if failed else 0
+            self._doctor_emit(checks, failed, exit_code)
+            return exit_code
 
-        print(f"[ OK ] filters declared: {', '.join(filter_names)}")
+        checks.append(
+            {
+                "check": "filters_declared",
+                "status": "ok",
+                "detail": f"filters declared: {', '.join(filter_names)}",
+            }
+        )
 
         for filter_name in filter_names:
             check_clean = subprocess.run(
@@ -452,17 +485,37 @@ class EncryptionManager:
             ).stdout.strip()
 
             if check_clean and check_smudge:
-                print(f"[ OK ] filter '{filter_name}' configured in .git/config")
+                checks.append(
+                    {
+                        "check": "git_config",
+                        "status": "ok",
+                        "detail": f"filter '{filter_name}' configured in .git/config",
+                    }
+                )
             else:
-                print(
-                    f"[WARN] filter '{filter_name}' not configured in .git/config (run setup-filters)"
+                checks.append(
+                    {
+                        "check": "git_config",
+                        "status": "warn",
+                        "detail": f"filter '{filter_name}' not configured in .git/config (run setup-filters)",
+                    }
                 )
 
             if self.key_manager.is_cached(filter_name):
-                print(f"[ OK ] local key cache exists for '{filter_name}'")
+                checks.append(
+                    {
+                        "check": "key_cache",
+                        "status": "ok",
+                        "detail": f"local key cache exists for '{filter_name}'",
+                    }
+                )
             else:
-                print(
-                    f"[WARN] no local key cache for '{filter_name}' (run pull-aes-key)"
+                checks.append(
+                    {
+                        "check": "key_cache",
+                        "status": "warn",
+                        "detail": f"no local key cache for '{filter_name}' (run pull-aes-key)",
+                    }
                 )
 
         # Resolving the parameter name forces credential/region resolution
@@ -470,9 +523,21 @@ class EncryptionManager:
         # not that the key parameter exists or that a full fetch would succeed.
         try:
             self.key_manager.resolve_parameter_name(filter_names[0])
-            print("[ OK ] backend credentials/region resolved")
+            checks.append(
+                {
+                    "check": "backend_credentials",
+                    "status": "ok",
+                    "detail": "backend credentials/region resolved",
+                }
+            )
         except Exception:
-            print("[WARN] backend credentials/region unresolved (offline ok)")
+            checks.append(
+                {
+                    "check": "backend_credentials",
+                    "status": "warn",
+                    "detail": "backend credentials/region unresolved (offline ok)",
+                }
+            )
 
         for filter_name in filter_names:
             files = self.git_attributes_parser.get_files_for_filter(filter_name)
@@ -482,16 +547,47 @@ class EncryptionManager:
                 if not self.__is_encrypted(file_path):
                     plaintext_files.append(file_path)
                     failed = True
-                    print(
-                        f"[FAIL] {file_path} is tracked as secret but is PLAINTEXT in the working tree"
+                    checks.append(
+                        {
+                            "check": "plaintext_scan",
+                            "status": "fail",
+                            "detail": f"{file_path} is tracked as secret but is PLAINTEXT in the working tree",
+                        }
                     )
 
             if not plaintext_files:
-                print(
-                    f"[ OK ] all tracked secret files are encrypted for '{filter_name}'"
+                checks.append(
+                    {
+                        "check": "plaintext_scan",
+                        "status": "ok",
+                        "detail": f"all tracked secret files are encrypted for '{filter_name}'",
+                    }
                 )
 
-        return 1 if failed else 0
+        exit_code = 1 if failed else 0
+        self._doctor_emit(checks, failed, exit_code)
+        return exit_code
+
+    def _doctor_emit(self, checks, failed, exit_code):
+        if self.output.json:
+            self.output.result(
+                {"ok": not failed, "exit_code": exit_code, "checks": checks}
+            )
+            return
+        # Human mode: render each check with its label; repository_context gets
+        # its first line as the label target and sub-lines printed as-is.
+        label_map = {"ok": "[ OK ]", "warn": "[WARN]", "fail": "[FAIL]"}
+        for c in checks:
+            label = label_map[c["status"]]
+            detail = c["detail"]
+            if c["check"] == "repository_context":
+                # detail is "Repository context\n  line2\n  line3\n  line4"
+                lines = detail.split("\n")
+                print(f"{label} {lines[0]}")
+                for sub in lines[1:]:
+                    print(sub)
+            else:
+                print(f"{label} {detail}")
 
     @staticmethod
     def show_project_version(_=None, output=None):

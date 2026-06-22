@@ -647,6 +647,47 @@ class TestEncryptionManagerService(unittest.TestCase):
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["command"], "clean-filter")  # not encrypt-files
 
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_schema_and_exit(self, mock_run):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=False
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 1)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["exit_code"], 1)
+        self.assertTrue(any(c["status"] == "fail" for c in payload["checks"]))
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_human_text_unchanged(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.doctor()
+        text = out.getvalue()
+        self.assertIn("[ OK ] filters declared: secret", text)
+        self.assertIn(
+            "[ OK ] all tracked secret files are encrypted for 'secret'", text
+        )
+
 
 class TestMain(unittest.TestCase):
     @patch("git_secret_protector.main.EncryptionManager.show_project_version")
