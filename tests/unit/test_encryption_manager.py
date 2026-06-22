@@ -548,9 +548,47 @@ class TestEncryptionManagerService(unittest.TestCase):
                 "ok": True,
                 "command": "setup-aes-key",
                 "filter": "secret",
+                "scheme": "v2",
                 "message": "Successfully set up AES key for filter: secret",
             },
         )
+
+    def test_setup_aes_key_scheme_passed_to_key_manager(self):
+        self.manager.setup_aes_key("secret", scheme="v1")
+        self.key_manager.setup_aes_key_and_iv.assert_called_once_with(
+            "secret", scheme="v1"
+        )
+
+    def test_setup_aes_key_v1_emits_warning_to_stderr(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.manager.setup_aes_key("secret", scheme="v1")
+        err = stderr.getvalue()
+        self.assertIn("WARNING", err)
+        self.assertIn("v1", err)
+
+    def test_setup_aes_key_v2_does_not_emit_warning(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.manager.setup_aes_key("secret", scheme="v2")
+        self.assertNotIn("WARNING", stderr.getvalue())
+
+    def test_setup_aes_key_v1_json_envelope_includes_scheme(self):
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with contextlib.redirect_stdout(out):
+            self.manager.setup_aes_key("secret", scheme="v1")
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["scheme"], "v1")
+
+    def test_get_encryption_handler_uses_filter_scheme(self):
+        self.key_manager.retrieve_key_and_iv.return_value = (b"\x00" * 32, b"\x00" * 16)
+        self.key_manager.get_scheme.return_value = "v1"
+        handler = self.manager._EncryptionManager__get_encryption_handler("secret")
+        self.assertEqual(handler.scheme, "v1")
 
     def test_setup_aes_key_json_error_envelope_and_exit(self):
         from git_secret_protector.core.output import Output

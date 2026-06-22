@@ -224,6 +224,44 @@ def test_init_creates_config_in_fresh_git_repo(tmp_path):
     assert cfg["DEFAULT"]["module_name"] == "demo"
 
 
+def test_setup_aes_key_scheme_v1_parses(tmp_path):
+    """setup-aes-key --scheme v1 must be accepted by argparse."""
+    import argparse
+    import sys as _sys
+
+    # Import main module to get its parser
+    ROOT_SRC = ROOT / "src"
+    _sys.path.insert(0, str(ROOT_SRC))
+    from git_secret_protector import main as _main
+
+    # Rebuild the parser by running main() up to parse_args - instead, replicate
+    # the argparse setup just enough to test the --scheme flag.
+    result = _run_main(["setup-aes-key", "--help"], tmp_path)
+    assert "--scheme" in result.stdout
+    assert "v1" in result.stdout
+    assert "v2" in result.stdout
+
+
+def test_setup_aes_key_scheme_v1_reaches_manager(tmp_path):
+    """Subprocess: setup-aes-key myfilter --scheme v1 must not crash on argparse."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=myfilter\n")
+    _seed_key_cache(repo, "myfilter")
+
+    from unittest.mock import patch, MagicMock
+
+    # Just verify argparse passes without error (backend call will fail w/o creds,
+    # that's fine - we only need returncode != 2, which would mean argparse error)
+    result = _run_main(
+        ["--repo-root", str(repo), "setup-aes-key", "myfilter", "--scheme", "v1"],
+        tmp_path,
+    )
+    # returncode 2 = argparse error; anything else means argparse accepted it
+    assert result.returncode != 2, f"argparse rejected --scheme v1: {result.stderr}"
+
+
 def test_encrypt_decrypt_stdout_is_pure_bytes_under_all_flags(tmp_path):
     """encrypt/decrypt stdout must equal exact payload bytes for every flag combo."""
     repo = tmp_path / "repo"

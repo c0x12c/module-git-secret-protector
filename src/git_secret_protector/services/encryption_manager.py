@@ -73,17 +73,25 @@ class EncryptionManager:
         self.output.error(f"Error: {msg}")
         sys.exit(1)
 
-    def setup_aes_key(self, filter_name: str):
+    def setup_aes_key(self, filter_name: str, scheme: str = "v2"):
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
             logger.info("Setting up AES key for filter: %s", filter_name)
-            self.key_manager.setup_aes_key_and_iv(filter_name)
+            self.key_manager.setup_aes_key_and_iv(filter_name, scheme=scheme)
             logger.info("Successfully set up AES key for filter: %s", filter_name)
+            if scheme == "v1":
+                self.output.error(
+                    f"WARNING: filter '{filter_name}' uses the legacy v1 scheme "
+                    f"(unauthenticated AES-CBC). Use only for repos with pre-1.4.0 "
+                    f"clients; run 'upgrade-scheme {filter_name}' once they are upgraded."
+                )
             msg = f"Successfully set up AES key for filter: {filter_name}"
             self.output.info(msg)
             self.output.result(
-                self._envelope_ok("setup-aes-key", filter=filter_name, message=msg)
+                self._envelope_ok(
+                    "setup-aes-key", filter=filter_name, scheme=scheme, message=msg
+                )
             )
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
@@ -767,8 +775,9 @@ class EncryptionManager:
 
     def __get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+        scheme = self.key_manager.get_scheme(filter_name)
         return AesEncryptionHandler(
-            aes_key=aes_key, iv=iv, magic_header=self.magic_header
+            aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme
         )
 
     def __is_encrypted(self, file_path: str):
