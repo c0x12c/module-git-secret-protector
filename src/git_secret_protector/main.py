@@ -64,7 +64,7 @@ def init_module_folder():
 
 def setup_aes_key(args):
     filter_name = args.filter_name
-    manager.setup_aes_key(filter_name=filter_name)
+    manager.setup_aes_key(filter_name=filter_name, scheme=args.scheme)
 
 
 def setup_filters(_):
@@ -79,6 +79,12 @@ def pull_aes_key(args):
 def rotate_key(args):
     filter_name = args.filter_name
     manager.rotate_keys(filter_name=filter_name, assume_yes=getattr(args, "yes", False))
+
+
+def upgrade_scheme(args):
+    manager.upgrade_scheme(
+        filter_name=args.filter_name, assume_yes=getattr(args, "yes", False)
+    )
 
 
 def decrypt_stdin(args):
@@ -191,9 +197,23 @@ def main():
     )
     subparsers = parser.add_subparsers(help="Available commands")
 
+    # setup-aes-key has its own subparser (--scheme flag)
+    parser_setup_aes_key = subparsers.add_parser(
+        "setup-aes-key", help="Set up AES key for a filter", parents=[common]
+    )
+    parser_setup_aes_key.add_argument(
+        "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_setup_aes_key.add_argument(
+        "--scheme",
+        choices=["v1", "v2"],
+        default="v2",
+        help="Encryption scheme (default: v2; v1 is legacy AES-CBC)",
+    )
+    parser_setup_aes_key.set_defaults(func=setup_aes_key)
+
     # Add filter commands to the parser
     filter_commands = [
-        ("setup-aes-key", setup_aes_key, "Set up AES key for a filter"),
         ("pull-aes-key", pull_aes_key, "Pull AES key for a filter"),
         (
             "decrypt-files",
@@ -256,6 +276,22 @@ def main():
         help="Skip the rotate confirmation prompt",
     )
     parser_rotate_key.set_defaults(func=rotate_key)
+
+    parser_upgrade_scheme = subparsers.add_parser(
+        "upgrade-scheme",
+        help="One-way upgrade of a filter from v1 (legacy AES-CBC) to v2 (AES-256-CTR+HMAC)",
+        parents=[common],
+    )
+    parser_upgrade_scheme.add_argument(
+        "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_upgrade_scheme.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the upgrade confirmation prompt",
+    )
+    parser_upgrade_scheme.set_defaults(func=upgrade_scheme)
 
     # Status command
     parser_status = subparsers.add_parser(

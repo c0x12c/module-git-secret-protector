@@ -548,9 +548,47 @@ class TestEncryptionManagerService(unittest.TestCase):
                 "ok": True,
                 "command": "setup-aes-key",
                 "filter": "secret",
+                "scheme": "v2",
                 "message": "Successfully set up AES key for filter: secret",
             },
         )
+
+    def test_setup_aes_key_scheme_passed_to_key_manager(self):
+        self.manager.setup_aes_key("secret", scheme="v1")
+        self.key_manager.setup_aes_key_and_iv.assert_called_once_with(
+            "secret", scheme="v1"
+        )
+
+    def test_setup_aes_key_v1_emits_warning_to_stderr(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.manager.setup_aes_key("secret", scheme="v1")
+        err = stderr.getvalue()
+        self.assertIn("WARNING", err)
+        self.assertIn("v1", err)
+
+    def test_setup_aes_key_v2_does_not_emit_warning(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.manager.setup_aes_key("secret", scheme="v2")
+        self.assertNotIn("WARNING", stderr.getvalue())
+
+    def test_setup_aes_key_v1_json_envelope_includes_scheme(self):
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with contextlib.redirect_stdout(out):
+            self.manager.setup_aes_key("secret", scheme="v1")
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["scheme"], "v1")
+
+    def test_get_encryption_handler_uses_filter_scheme(self):
+        self.key_manager.retrieve_key_and_iv.return_value = (b"\x00" * 32, b"\x00" * 16)
+        self.key_manager.get_scheme.return_value = "v1"
+        handler = self.manager._EncryptionManager__get_encryption_handler("secret")
+        self.assertEqual(handler.scheme, "v1")
 
     def test_setup_aes_key_json_error_envelope_and_exit(self):
         from git_secret_protector.core.output import Output
@@ -730,6 +768,111 @@ class TestEncryptionManagerService(unittest.TestCase):
             "[ OK ] all tracked secret files are encrypted for 'secret'", text
         )
 
+    # ----- Task-6 tests: scheme surfaced in status and doctor -----
+
+    def test_status_json_includes_scheme_field(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.return_value = "v1"
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["filters"][0]["scheme"], "v1")
+
+    def test_status_human_includes_scheme_line_and_existing_lines_unchanged(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.return_value = "v1"
+        out = io.StringIO()
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()
+        text = out.getvalue()
+        # additive: scheme line present
+        self.assertIn("  scheme: v1", text)
+        # existing lines byte-identical
+        self.assertIn("Filter: secret", text)
+        self.assertIn("  enc.txt: Encrypted", text)
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_scheme_check_v1_is_warn_with_filter_key(self, mock_run):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        self.key_manager.get_scheme.return_value = "v1"
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)  # warn does NOT change exit code
+        payload = json.loads(out.getvalue())
+        scheme_checks = [c for c in payload["checks"] if c.get("check") == "scheme"]
+        self.assertEqual(len(scheme_checks), 1)
+        sc = scheme_checks[0]
+        self.assertEqual(sc["status"], "warn")
+        self.assertIn("filter", sc)
+        self.assertEqual(sc["filter"], "secret")
+        self.assertIn("v1", sc["detail"])
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_scheme_check_v2_is_ok(self, mock_run):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        self.key_manager.get_scheme.return_value = "v2"
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        scheme_checks = [c for c in payload["checks"] if c.get("check") == "scheme"]
+        self.assertEqual(len(scheme_checks), 1)
+        self.assertEqual(scheme_checks[0]["status"], "ok")
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_human_v1_scheme_prints_warn_and_exit_still_zero(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        self.key_manager.get_scheme.return_value = "v1"
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)  # v1 warn must NOT fail doctor
+        self.assertIn("[WARN]", out.getvalue())
+        self.assertIn("v1", out.getvalue())
+
+    # ----- end Task-6 tests -----
+
 
 class TestMain(unittest.TestCase):
     @patch("git_secret_protector.main.EncryptionManager.show_project_version")
@@ -858,6 +1001,197 @@ class TestInitConfig(unittest.TestCase):
 
             self.assertEqual(rc, 1)
             self.assertIn("INVALID_BACKEND", stderr.getvalue())
+
+
+class TestUpgradeScheme(unittest.TestCase):
+    """Tests for EncryptionManager.upgrade_scheme."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        mock_settings = MagicMock()
+        mock_settings.magic_header = generate_random_string()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+    def test_idempotent_already_v2(self):
+        """get_scheme -> 'v2': no-op, set_scheme NOT called, counts.reencrypted==0."""
+        from git_secret_protector.core.output import Output
+
+        self.key_manager.get_scheme.return_value = "v2"
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "a.txt",
+            "b.txt",
+        ]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+
+        with contextlib.redirect_stdout(out):
+            self.manager.upgrade_scheme("secret")
+
+        self.key_manager.set_scheme.assert_not_called()
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"], "upgrade-scheme")
+        self.assertEqual(payload["counts"]["reencrypted"], 0)
+        self.assertEqual(payload["counts"]["total"], 2)
+
+    @patch("builtins.input", side_effect=EOFError)
+    def test_decline_on_eof_aborts_without_changes(self, mock_input):
+        """EOF on confirm prompt -> aborted, set_scheme NOT called."""
+        self.key_manager.get_scheme.return_value = "v1"
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "a.txt",
+            "b.txt",
+        ]
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            self.manager.upgrade_scheme("secret", assume_yes=False)
+
+        self.key_manager.set_scheme.assert_not_called()
+        self.assertIn("Aborted", stderr.getvalue())
+
+    def test_v1_to_v2_reencrypts_files_then_sets_scheme(self):
+        """v1 -> v2: re-encrypts each file with v2 handler, set_scheme called AFTER."""
+        aes_key = b"\x00" * 32
+        iv = b"\x01" * 16
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.retrieve_key_and_iv.return_value = (aes_key, iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "a.txt",
+            "b.txt",
+        ]
+
+        call_order = []
+        magic_header = self.manager.magic_header
+        v2_byte = b"\x02"
+
+        mock_handler = MagicMock(spec=["decrypt_file", "encrypt_file"])
+        mock_handler.decrypt_file.side_effect = lambda f: call_order.append(
+            ("decrypt", f)
+        )
+        mock_handler.encrypt_file.side_effect = lambda f: call_order.append(
+            ("encrypt", f)
+        )
+        self.key_manager.set_scheme.side_effect = lambda f, s: call_order.append(
+            ("set_scheme", f, s)
+        )
+
+        def fake_open(path, mode="r", **kwargs):
+            if "b" in mode and "w" not in mode:
+                return io.BytesIO(magic_header + v2_byte + b"rest")
+            raise RuntimeError("unexpected open call in test")
+
+        from git_secret_protector.crypto.aes_encryption_handler import (
+            AesEncryptionHandler as RealHandler,
+        )
+
+        from git_secret_protector.core.output import Output
+
+        self.manager.output = Output(json=True)
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            return_value=True,
+        ), patch("builtins.open", side_effect=fake_open), patch(
+            "git_secret_protector.services.encryption_manager.AesEncryptionHandler",
+            side_effect=lambda **kw: mock_handler,
+            **{"V2": RealHandler.V2},
+        ):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        # decrypt + encrypt called for each file
+        self.assertEqual(
+            [(op, f) for op, f in [c[:2] for c in call_order if c[0] != "set_scheme"]],
+            [
+                ("decrypt", "a.txt"),
+                ("encrypt", "a.txt"),
+                ("decrypt", "b.txt"),
+                ("encrypt", "b.txt"),
+            ],
+        )
+        # set_scheme called after all re-encryptions
+        set_scheme_idx = next(
+            i for i, c in enumerate(call_order) if c[0] == "set_scheme"
+        )
+        last_encrypt_idx = max(i for i, c in enumerate(call_order) if c[0] == "encrypt")
+        self.assertGreater(set_scheme_idx, last_encrypt_idx)
+        self.key_manager.set_scheme.assert_called_once_with("secret", "v2")
+
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["counts"]["reencrypted"], 2)
+        self.assertEqual(payload["counts"]["total"], 2)
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def test_upgrade_scheme_v1_calls_print_context(self, mock_get_settings):
+        """upgrade_scheme calls _print_context with the filter name on the v1->v2 path."""
+        mock_settings = MagicMock()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
+        mock_get_settings.return_value = mock_settings
+
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.retrieve_key_and_iv.return_value = (b"\x00" * 32, b"\x01" * 16)
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+
+        with patch.object(self.manager, "_print_context") as mock_print_ctx:
+            # No files to re-encrypt; assume_yes skips the confirm prompt.
+            # set_scheme is called with no files - that's fine, we only care about
+            # _print_context being called before anything else.
+            self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        mock_print_ctx.assert_called_once_with("secret")
+
+    @patch("git_secret_protector.services.encryption_manager.AesEncryptionHandler")
+    def test_verify_after_failure_exits_1(self, mock_handler_cls):
+        """If post-upgrade verify finds a file not v2: sys.exit(1) AND set_scheme NOT called (blob stays v1)."""
+        aes_key = b"\x00" * 32
+        iv = b"\x01" * 16
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.retrieve_key_and_iv.return_value = (aes_key, iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+
+        handler = MagicMock()
+        mock_handler_cls.return_value = handler
+
+        magic_header = self.manager.magic_header
+        # Version byte is v1 (not 0x02) - simulate failed upgrade
+        v1_content = magic_header + b"plain-base64-v1"
+
+        def fake_open(path, mode="r", **kwargs):
+            if "b" in mode and "w" not in mode:
+                return io.BytesIO(v1_content)
+            raise RuntimeError("unexpected open call in test")
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__is_encrypted",
+            return_value=True,
+        ), patch("builtins.open", side_effect=fake_open):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        # Blob must stay v1 on verify failure - set_scheme must NOT have been called.
+        self.key_manager.set_scheme.assert_not_called()
 
 
 if __name__ == "__main__":

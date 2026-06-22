@@ -42,7 +42,7 @@ class AesKeyManager:
     :raises AesKeyError: If there is any error during the setup process
     """
 
-    def setup_aes_key_and_iv(self, filter_name: str):
+    def setup_aes_key_and_iv(self, filter_name: str, scheme: str = "v2"):
         try:
             logger.info("Set up AES key and IV for filter: %s", filter_name)
 
@@ -62,7 +62,7 @@ class AesKeyManager:
             data = {
                 "aes_key": base64.b64encode(s=aes_key).decode(encoding="utf-8"),
                 "iv": base64.b64encode(s=iv).decode(encoding="utf-8"),
-                "version": 2,
+                "version": 1 if scheme == "v1" else 2,
             }
             json_data = json.dumps(obj=data)
 
@@ -145,7 +145,7 @@ class AesKeyManager:
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
             0o600,
         )
-        # Lock mode to 0600 on the fd before writing — O_CREAT ignores the mode
+        # Lock mode to 0600 on the fd before writing - O_CREAT ignores the mode
         # for a pre-existing file, so without this the secret would briefly land
         # under the old (e.g. 0644) permissions.
         os.fchmod(cache_fd, 0o600)
@@ -164,6 +164,42 @@ class AesKeyManager:
 
         logger.debug("No local cache found for filter: %s", filter_name)
         return None
+
+    def get_scheme(self, filter_name: str) -> str:
+        """Return "v1" or "v2" for the scheme stored in the key blob.
+
+        Tries the local cache first; falls back to the storage backend.
+        A missing or unrecognised version field defaults to "v2" (safe default).
+        A completely missing key blob still raises AesKeyError (same as retrieve_key_and_iv).
+        """
+        try:
+            data = self.load_key_iv_from_cache(filter_name=filter_name)
+            if data is None:
+                parameter_name = self._parameter_name(filter_name=filter_name)
+                data = json.loads(
+                    self._get_storage_manager().retrieve(name=parameter_name)
+                )
+            version = data.get("version", 2)
+            return "v1" if version == 1 else "v2"
+        except Exception as e:
+            raise AesKeyError(
+                f"Failed to get scheme for filter '{filter_name}': {str(e)}"
+            )
+
+    def set_scheme(self, filter_name: str, scheme: str):
+        """Rewrite the version field in the stored blob (backend + cache) without touching aes_key/iv."""
+        try:
+            parameter_name = self._parameter_name(filter_name=filter_name)
+            # Backend is authoritative - always reload from there
+            data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
+            data["version"] = 1 if scheme == "v1" else 2
+            json_data = json.dumps(data)
+            self._get_storage_manager().store(parameter_name, json_data)
+            self.cache_key_iv_locally(filter_name, json_data)
+        except Exception as e:
+            raise AesKeyError(
+                f"Failed to set scheme for filter '{filter_name}': {str(e)}"
+            )
 
     def remove_key_iv_from_cache(self, filter_name: str):
         cache_path = self._cache_path(filter_name=filter_name)

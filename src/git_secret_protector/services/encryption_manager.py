@@ -73,17 +73,25 @@ class EncryptionManager:
         self.output.error(f"Error: {msg}")
         sys.exit(1)
 
-    def setup_aes_key(self, filter_name: str):
+    def setup_aes_key(self, filter_name: str, scheme: str = "v2"):
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
             logger.info("Setting up AES key for filter: %s", filter_name)
-            self.key_manager.setup_aes_key_and_iv(filter_name)
+            self.key_manager.setup_aes_key_and_iv(filter_name, scheme=scheme)
             logger.info("Successfully set up AES key for filter: %s", filter_name)
+            if scheme == "v1":
+                self.output.error(
+                    f"WARNING: filter '{filter_name}' uses the legacy v1 scheme "
+                    f"(unauthenticated AES-CBC). Use only for repos with pre-1.4.0 "
+                    f"clients; run 'upgrade-scheme {filter_name}' once they are upgraded."
+                )
             msg = f"Successfully set up AES key for filter: {filter_name}"
             self.output.info(msg)
             self.output.result(
-                self._envelope_ok("setup-aes-key", filter=filter_name, message=msg)
+                self._envelope_ok(
+                    "setup-aes-key", filter=filter_name, scheme=scheme, message=msg
+                )
             )
         except Exception as e:
             logger.error(f"AES key setup command failed: {e}", exc_info=True)
@@ -307,6 +315,94 @@ class EncryptionManager:
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 
+    def upgrade_scheme(self, filter_name: str, assume_yes: bool = False):
+        filter_name = self._require_filter(filter_name)
+        self._print_context(filter_name)
+        scheme = self.key_manager.get_scheme(filter_name)
+        files = self.git_attributes_parser.get_files_for_filter(filter_name)
+        total = len(files)
+
+        if scheme == "v2":
+            msg = f"Filter '{filter_name}' is already on scheme v2; nothing to do."
+            self.output.info(msg)
+            self.output.result(
+                self._envelope_ok(
+                    "upgrade-scheme",
+                    filter=filter_name,
+                    message=msg,
+                    counts={"reencrypted": 0, "total": total},
+                )
+            )
+            return
+
+        if not assume_yes:
+            try:
+                answer = input(
+                    f"Upgrade filter '{filter_name}' from v1 to v2? "
+                    f"This re-encrypts ALL matched files. [y/N] "
+                )
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() not in {"y", "yes"}:
+                self.output.error("Aborted.")
+                return
+
+        aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+        v2_handler = AesEncryptionHandler(
+            aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme="v2"
+        )
+
+        for i, file in enumerate(files, 1):
+            self.output.progress(f"[{i}/{total}] {file}")
+            v2_handler.decrypt_file(file)
+            v2_handler.encrypt_file(file)
+
+        # Verify-after: each file must be encrypted and have the v2 version byte.
+        # set_scheme is called only after this passes so the blob stays v1 on failure.
+        v2_byte = AesEncryptionHandler.V2
+        failed_files = []
+        for file in files:
+            if not self.__is_encrypted(file):
+                failed_files.append(file)
+                continue
+            try:
+                with open(file, "rb") as fh:
+                    fh.read(len(self.magic_header))  # skip magic header
+                    byte = fh.read(1)
+                if byte != v2_byte:
+                    failed_files.append(file)
+            except IOError:
+                failed_files.append(file)
+
+        if failed_files:
+            self.output.error(
+                f"upgrade-scheme: verify failed - {len(failed_files)} file(s) "
+                f"not v2 after re-encryption: {failed_files}"
+            )
+            self.output.result(
+                self._envelope_err(
+                    "upgrade-scheme",
+                    "verify-after failed",
+                    filter=filter_name,
+                    failed_files=failed_files,
+                )
+            )
+            sys.exit(1)
+
+        # Fail-safe: flip the blob to v2 only after all files are verified v2.
+        self.key_manager.set_scheme(filter_name, "v2")
+
+        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
+        self.output.info(msg)
+        self.output.result(
+            self._envelope_ok(
+                "upgrade-scheme",
+                filter=filter_name,
+                message=msg,
+                counts={"reencrypted": total, "total": total},
+            )
+        )
+
     def rotate_keys(self, filter_name: str, assume_yes: bool = False):
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
@@ -393,7 +489,15 @@ class EncryptionManager:
                     {"path": f, "encrypted": self.__is_encrypted(file_path=f)}
                     for f in files
                 ]
-                data["filters"].append({"name": filter_name, "files": file_entries})
+                try:
+                    scheme = self.key_manager.get_scheme(filter_name)
+                    if scheme not in ("v1", "v2"):
+                        scheme = "v2"
+                except Exception:
+                    scheme = "v2"
+                data["filters"].append(
+                    {"name": filter_name, "files": file_entries, "scheme": scheme}
+                )
 
             if self.output.json:
                 self.output.result(data)
@@ -401,6 +505,7 @@ class EncryptionManager:
 
             for entry in data["filters"]:
                 print(f"Filter: {entry['name']}")
+                print(f"  scheme: {entry['scheme']}")
                 if entry["files"]:
                     for f in entry["files"]:
                         status = "Encrypted" if f["encrypted"] else "⚠ PLAINTEXT"
@@ -519,6 +624,35 @@ class EncryptionManager:
                         "check": "key_cache",
                         "status": "warn",
                         "detail": f"no local key cache for '{filter_name}' (run pull-aes-key)",
+                        "filter": filter_name,
+                    }
+                )
+
+        for filter_name in filter_names:
+            try:
+                scheme = self.key_manager.get_scheme(filter_name)
+                if scheme not in ("v1", "v2"):
+                    scheme = "v2"
+            except Exception:
+                scheme = "v2"
+            if scheme == "v2":
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "ok",
+                        "detail": f"filter '{filter_name}' uses authenticated scheme v2",
+                        "filter": filter_name,
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "warn",
+                        "detail": (
+                            f"filter '{filter_name}' uses legacy unauthenticated scheme v1 "
+                            f"(run upgrade-scheme once all clients are >=1.4.0)"
+                        ),
                         "filter": filter_name,
                     }
                 )
@@ -767,8 +901,9 @@ class EncryptionManager:
 
     def __get_encryption_handler(self, filter_name: str):
         aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+        scheme = self.key_manager.get_scheme(filter_name)
         return AesEncryptionHandler(
-            aes_key=aes_key, iv=iv, magic_header=self.magic_header
+            aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme
         )
 
     def __is_encrypted(self, file_path: str):

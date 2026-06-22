@@ -55,7 +55,7 @@ class TestAesEncryptionHandler(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "Authentication failed — wrong key or tampered ciphertext",
+            "Authentication failed - wrong key or tampered ciphertext",
         ):
             self.handler.decrypt_data(tampered)
 
@@ -76,6 +76,52 @@ class TestAesEncryptionHandler(unittest.TestCase):
         already_encrypted = self.magic_header + b"\x02already-encrypted"
 
         self.assertIs(self.handler.encrypt_data(already_encrypted), already_encrypted)
+
+
+class TestAesEncryptionHandlerScheme(unittest.TestCase):
+    """Tests for scheme="v1"/"v2" parameter on AesEncryptionHandler."""
+
+    MH = b"ENCRYPTED"
+
+    def _h(self, scheme):
+        return AesEncryptionHandler(
+            aes_key=secrets.token_bytes(32),
+            iv=secrets.token_bytes(16),
+            magic_header=self.MH,
+            scheme=scheme,
+        )
+
+    def test_v1_roundtrip_and_deterministic(self):
+        h = self._h("v1")
+        data = b"super-secret-value"
+        ct1 = h.encrypt_data(data)
+        ct2 = h.encrypt_data(data)
+        self.assertTrue(ct1.startswith(self.MH))
+        self.assertNotEqual(ct1[len(self.MH) : len(self.MH) + 1], b"\x02")
+        self.assertEqual(ct1, ct2)
+        self.assertEqual(h.decrypt_data(ct1), data)
+
+    def test_v2_still_default_and_authenticated(self):
+        h = self._h("v2")
+        data = b"abc"
+        ct = h.encrypt_data(data)
+        self.assertEqual(ct[len(self.MH) : len(self.MH) + 1], b"\x02")
+        self.assertEqual(h.decrypt_data(ct), data)
+
+    def test_scheme_defaults_to_v2(self):
+        h = AesEncryptionHandler(
+            aes_key=secrets.token_bytes(32),
+            iv=secrets.token_bytes(16),
+            magic_header=self.MH,
+        )
+        self.assertEqual(h.encrypt_data(b"x")[len(self.MH) : len(self.MH) + 1], b"\x02")
+
+    def test_magic_header_short_circuit_both_schemes(self):
+        for s in ("v1", "v2"):
+            with self.subTest(scheme=s):
+                h = self._h(s)
+                already = self.MH + b"whatever"
+                self.assertIs(h.encrypt_data(already), already)
 
 
 if __name__ == "__main__":
