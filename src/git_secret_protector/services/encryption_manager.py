@@ -315,6 +315,92 @@ class EncryptionManager:
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 
+    def upgrade_scheme(self, filter_name: str, assume_yes: bool = False):
+        filter_name = self._require_filter(filter_name)
+        scheme = self.key_manager.get_scheme(filter_name)
+        files = self.git_attributes_parser.get_files_for_filter(filter_name)
+        total = len(files)
+
+        if scheme == "v2":
+            msg = f"Filter '{filter_name}' is already on scheme v2; nothing to do."
+            self.output.info(msg)
+            self.output.result(
+                self._envelope_ok(
+                    "upgrade-scheme",
+                    filter=filter_name,
+                    message=msg,
+                    counts={"reencrypted": 0, "total": total},
+                )
+            )
+            return
+
+        if not assume_yes:
+            try:
+                answer = input(
+                    f"Upgrade filter '{filter_name}' from v1 to v2? "
+                    f"This re-encrypts ALL matched files. [y/N] "
+                )
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() not in {"y", "yes"}:
+                self.output.error("Aborted.")
+                return
+
+        aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+        v2_handler = AesEncryptionHandler(
+            aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme="v2"
+        )
+
+        for i, file in enumerate(files, 1):
+            self.output.progress(f"[{i}/{total}] {file}")
+            v2_handler.decrypt_file(file)
+            v2_handler.encrypt_file(file)
+
+        # Fail-safe: update scheme metadata only after all blobs are v2
+        self.key_manager.set_scheme(filter_name, "v2")
+
+        # Verify-after: each file must be encrypted and have the v2 version byte
+        v2_byte = AesEncryptionHandler.V2
+        failed_files = []
+        for file in files:
+            if not self.__is_encrypted(file):
+                failed_files.append(file)
+                continue
+            try:
+                with open(file, "rb") as fh:
+                    fh.read(len(self.magic_header))  # skip magic header
+                    byte = fh.read(1)
+                if byte != v2_byte:
+                    failed_files.append(file)
+            except IOError:
+                failed_files.append(file)
+
+        if failed_files:
+            self.output.error(
+                f"upgrade-scheme: verify failed - {len(failed_files)} file(s) "
+                f"not v2 after re-encryption: {failed_files}"
+            )
+            self.output.result(
+                self._envelope_err(
+                    "upgrade-scheme",
+                    "verify-after failed",
+                    filter=filter_name,
+                    failed_files=failed_files,
+                )
+            )
+            sys.exit(1)
+
+        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
+        self.output.info(msg)
+        self.output.result(
+            self._envelope_ok(
+                "upgrade-scheme",
+                filter=filter_name,
+                message=msg,
+                counts={"reencrypted": total, "total": total},
+            )
+        )
+
     def rotate_keys(self, filter_name: str, assume_yes: bool = False):
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)

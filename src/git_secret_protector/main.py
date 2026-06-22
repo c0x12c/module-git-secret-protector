@@ -81,6 +81,12 @@ def rotate_key(args):
     manager.rotate_keys(filter_name=filter_name, assume_yes=getattr(args, "yes", False))
 
 
+def upgrade_scheme(args):
+    manager.upgrade_scheme(
+        filter_name=args.filter_name, assume_yes=getattr(args, "yes", False)
+    )
+
+
 def decrypt_stdin(args):
     file_name = args.file_name
     manager.decrypt_stdin(file_name=file_name)
@@ -270,6 +276,22 @@ def main():
         help="Skip the rotate confirmation prompt",
     )
     parser_rotate_key.set_defaults(func=rotate_key)
+
+    parser_upgrade_scheme = subparsers.add_parser(
+        "upgrade-scheme",
+        help="One-way upgrade of a filter from v1 (legacy AES-CBC) to v2 (AES-256-CTR+HMAC)",
+        parents=[common],
+    )
+    parser_upgrade_scheme.add_argument(
+        "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_upgrade_scheme.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the upgrade confirmation prompt",
+    )
+    parser_upgrade_scheme.set_defaults(func=upgrade_scheme)
 
     # Status command
     parser_status = subparsers.add_parser(

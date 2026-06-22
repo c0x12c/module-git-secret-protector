@@ -299,3 +299,28 @@ def test_encrypt_decrypt_stdout_is_pure_bytes_under_all_flags(tmp_path):
             f"stdout purity violated with flags={flags}: "
             f"got {dec.stdout[:60]!r}, expected {plaintext!r}"
         )
+
+
+def test_upgrade_scheme_subcommand_parses(tmp_path):
+    """upgrade-scheme --help must be accepted by argparse (parses without error)."""
+    result = _run_main(["upgrade-scheme", "--help"], tmp_path)
+    assert result.returncode == 0
+    assert "upgrade-scheme" in result.stdout or "upgrade" in result.stdout
+
+
+def test_upgrade_scheme_filter_name_and_yes_parse(tmp_path):
+    """upgrade-scheme myfilter -y must not produce an argparse error (exit 2)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=myfilter\n")
+    _seed_key_cache(repo, "myfilter")
+
+    result = _run_main(
+        ["--repo-root", str(repo), "upgrade-scheme", "myfilter", "-y"],
+        tmp_path,
+    )
+    # returncode 2 = argparse error; anything else means argparse accepted it
+    assert (
+        result.returncode != 2
+    ), f"argparse rejected upgrade-scheme -y: {result.stderr}"
