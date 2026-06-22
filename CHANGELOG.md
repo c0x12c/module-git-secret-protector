@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.5.0] - 2026-06-22
+
+- docs: refresh CLAUDE.md for scheme versioning + output flags + init/doctor (#96)
+
 ## [1.4.0] - 2026-06-13
 
 - feat(cli): CLI UX/security hardening — namespace surfacing, rotate-key confirm, doctor, errors to stderr (#91)
