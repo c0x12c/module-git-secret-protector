@@ -487,7 +487,15 @@ class EncryptionManager:
                     {"path": f, "encrypted": self.__is_encrypted(file_path=f)}
                     for f in files
                 ]
-                data["filters"].append({"name": filter_name, "files": file_entries})
+                try:
+                    scheme = self.key_manager.get_scheme(filter_name)
+                    if scheme not in ("v1", "v2"):
+                        scheme = "v2"
+                except Exception:
+                    scheme = "v2"
+                data["filters"].append(
+                    {"name": filter_name, "files": file_entries, "scheme": scheme}
+                )
 
             if self.output.json:
                 self.output.result(data)
@@ -495,6 +503,7 @@ class EncryptionManager:
 
             for entry in data["filters"]:
                 print(f"Filter: {entry['name']}")
+                print(f"  scheme: {entry['scheme']}")
                 if entry["files"]:
                     for f in entry["files"]:
                         status = "Encrypted" if f["encrypted"] else "⚠ PLAINTEXT"
@@ -613,6 +622,35 @@ class EncryptionManager:
                         "check": "key_cache",
                         "status": "warn",
                         "detail": f"no local key cache for '{filter_name}' (run pull-aes-key)",
+                        "filter": filter_name,
+                    }
+                )
+
+        for filter_name in filter_names:
+            try:
+                scheme = self.key_manager.get_scheme(filter_name)
+                if scheme not in ("v1", "v2"):
+                    scheme = "v2"
+            except Exception:
+                scheme = "v2"
+            if scheme == "v2":
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "ok",
+                        "detail": f"filter '{filter_name}' uses authenticated scheme v2",
+                        "filter": filter_name,
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "warn",
+                        "detail": (
+                            f"filter '{filter_name}' uses legacy unauthenticated scheme v1 "
+                            f"(run upgrade-scheme once all clients are >=1.4.0)"
+                        ),
                         "filter": filter_name,
                     }
                 )
