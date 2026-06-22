@@ -378,20 +378,39 @@ class EncryptionManager:
     def status(self):
         self._print_context()
         try:
+            settings = get_settings()
             filter_names = self.git_attributes_parser.get_filter_names()
+            data = {
+                "repo_root": settings.base_dir,
+                "backend": settings.storage_type.value,
+                "module_name": settings.module_name,
+                "filters": [],
+            }
             for filter_name in filter_names:
-                self.output.info(f"Filter: {filter_name}")
                 files = self.git_attributes_parser.get_files_for_filter(filter_name)
-                if files:
-                    for file in files:
-                        encrypted = self.__is_encrypted(file_path=file)
-                        status = "Encrypted" if encrypted else "⚠ PLAINTEXT"
-                        self.output.info(f"  {file}: {status}")
+                file_entries = [
+                    {"path": f, "encrypted": self.__is_encrypted(file_path=f)}
+                    for f in files
+                ]
+                data["filters"].append({"name": filter_name, "files": file_entries})
+
+            if self.output.json:
+                self.output.result(data)
+                return
+
+            for entry in data["filters"]:
+                print(f"Filter: {entry['name']}")
+                if entry["files"]:
+                    for f in entry["files"]:
+                        status = "Encrypted" if f["encrypted"] else "⚠ PLAINTEXT"
+                        print(f"  {f['path']}: {status}")
                 else:
-                    self.output.info("  No files found for this filter.")
-            self.output.result(self._envelope_ok("status"))
+                    print("  No files found for this filter.")
         except Exception as e:
-            self.output.error(f"Status command failed: {e}")
+            if self.output.json:
+                self.output.result(self._envelope_err("status", str(e)))
+            else:
+                self.output.error(f"Status command failed: {e}")
             sys.exit(1)
 
     def doctor(self) -> int:

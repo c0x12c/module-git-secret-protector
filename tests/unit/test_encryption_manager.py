@@ -298,6 +298,47 @@ class TestEncryptionManagerService(unittest.TestCase):
         mock_input.assert_not_called()
         rotator.rotate_key.assert_called_once_with("secret")
 
+    def test_status_json_schema(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "enc.txt",
+            "plain.txt",
+        ]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", side_effect=[True, False]
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["backend"], "AWS_SSM")
+        self.assertEqual(payload["filters"][0]["name"], "secret")
+        self.assertEqual(
+            payload["filters"][0]["files"],
+            [
+                {"path": "enc.txt", "encrypted": True},
+                {"path": "plain.txt", "encrypted": False},
+            ],
+        )
+
+    def test_status_human_text_unchanged(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            "enc.txt",
+            "plain.txt",
+        ]
+        out = io.StringIO()
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", side_effect=[True, False]
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()
+        self.assertIn("  enc.txt: Encrypted", out.getvalue())
+        self.assertIn("  plain.txt: ⚠ PLAINTEXT", out.getvalue())
+
     def test_status_marks_plaintext_files(self):
         self.git_attributes_parser.get_filter_names.return_value = ["secret"]
         self.git_attributes_parser.get_files_for_filter.return_value = [
