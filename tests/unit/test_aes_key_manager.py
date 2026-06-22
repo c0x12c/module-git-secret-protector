@@ -158,5 +158,160 @@ class TestAesKeyManager(unittest.TestCase):
         )
 
 
+class TestAesKeyManagerScheme(unittest.TestCase):
+    """Tests for scheme-aware key blob methods: setup(scheme), get_scheme, set_scheme."""
+
+    @patch("git_secret_protector.crypto.aes_key_manager.get_settings")
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def setUp(self, mock_create, mock_get_settings):
+        self.mock_settings = MagicMock()
+        self.mock_temp_dir = tempfile.TemporaryDirectory()
+        self.mock_settings.cache_dir = self.mock_temp_dir.name
+        self.mock_settings.module_name = secrets.token_hex(8)
+        self.mock_settings.storage_type = StorageType.AWS_SSM
+
+        mock_get_settings.return_value = self.mock_settings
+
+        self.mock_storage_manager = MagicMock()
+        mock_create.return_value = self.mock_storage_manager
+
+        self.aes_key_manager = AesKeyManager()
+        # Give the manager a pre-wired storage manager so _get_storage_manager() returns it
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+
+    def _make_blob(self, version=2):
+        aes_key = base64.b64encode(secrets.token_bytes(32)).decode("utf-8")
+        iv = base64.b64encode(secrets.token_bytes(16)).decode("utf-8")
+        data = {"aes_key": aes_key, "iv": iv}
+        if version is not None:
+            data["version"] = version
+        return data
+
+    # ------------------------------------------------------------------
+    # setup_aes_key_and_iv scheme tests
+    # ------------------------------------------------------------------
+
+    def test_setup_default_scheme_writes_version_2(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = False
+
+        self.aes_key_manager.setup_aes_key_and_iv(filter_name)
+
+        self.mock_storage_manager.store.assert_called_once()
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        data = json.loads(stored_json)
+        self.assertEqual(data["version"], 2)
+
+    def test_setup_v1_scheme_writes_version_1(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = False
+
+        self.aes_key_manager.setup_aes_key_and_iv(filter_name, scheme="v1")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        data = json.loads(stored_json)
+        self.assertEqual(data["version"], 1)
+
+    def test_setup_v2_scheme_writes_version_2(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = False
+
+        self.aes_key_manager.setup_aes_key_and_iv(filter_name, scheme="v2")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        data = json.loads(stored_json)
+        self.assertEqual(data["version"], 2)
+
+    # ------------------------------------------------------------------
+    # get_scheme tests
+    # ------------------------------------------------------------------
+
+    def test_get_scheme_version_1_returns_v1(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=1)
+        # Write to cache so load_key_iv_from_cache finds it
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        result = self.aes_key_manager.get_scheme(filter_name)
+
+        self.assertEqual(result, "v1")
+
+    def test_get_scheme_version_2_returns_v2(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=2)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        result = self.aes_key_manager.get_scheme(filter_name)
+
+        self.assertEqual(result, "v2")
+
+    def test_get_scheme_version_absent_defaults_v2(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=None)  # no "version" key
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        result = self.aes_key_manager.get_scheme(filter_name)
+
+        self.assertEqual(result, "v2")
+
+    def test_get_scheme_cache_miss_falls_back_to_backend(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=1)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(blob)
+
+        result = self.aes_key_manager.get_scheme(filter_name)
+
+        self.mock_storage_manager.retrieve.assert_called_once()
+        self.assertEqual(result, "v1")
+
+    # ------------------------------------------------------------------
+    # set_scheme tests
+    # ------------------------------------------------------------------
+
+    def test_set_scheme_v2_rewrites_version_preserving_key_iv(self):
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=1)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "v2")
+
+        # Backend store called with version 2
+        self.mock_storage_manager.store.assert_called_once()
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        stored = json.loads(stored_json)
+        self.assertEqual(stored["version"], 2)
+        self.assertEqual(stored["aes_key"], original_blob["aes_key"])
+        self.assertEqual(stored["iv"], original_blob["iv"])
+
+    def test_set_scheme_v1_rewrites_version(self):
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=2)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "v1")
+
+        stored_json = self.mock_storage_manager.store.call_args[0][1]
+        self.assertEqual(json.loads(stored_json)["version"], 1)
+
+    def test_set_scheme_updates_local_cache(self):
+        filter_name = secrets.token_hex(8)
+        original_blob = self._make_blob(version=1)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.retrieve.return_value = json.dumps(original_blob)
+
+        self.aes_key_manager.set_scheme(filter_name, "v2")
+
+        # Cache should now reflect version 2
+        cached = self.aes_key_manager.load_key_iv_from_cache(filter_name)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["version"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
