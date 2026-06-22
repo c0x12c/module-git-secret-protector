@@ -214,7 +214,22 @@ In case you need to rotate the AES key due to security reasons or a team member 
   git reset --hard
   ```
 
-### 4. Logging
+### 4. Output Control
+
+Three global flags control how the CLI produces output. They can be placed before or after the subcommand:
+
+- `--quiet` - suppress success and info messages; errors are still printed to stderr and exit codes are unchanged.
+- `--verbose` - emit internal log output to stderr for debugging.
+- `--json` - output machine-readable JSON. Supported for `status`, `doctor`, `version`, and the action commands (`setup-aes-key`, `pull-aes-key`, `rotate-key`, `encrypt-files`, `decrypt-files`). Action commands emit an `{ok, command, ...}` envelope; bulk operations (`encrypt-files`, `decrypt-files`) include a `counts` object with totals. Note: `--json` is ignored for the git-invoked `encrypt` and `decrypt` filter commands because their stdout is the raw file payload.
+
+```sh
+git-secret-protector status --json
+git-secret-protector doctor --json
+git-secret-protector --quiet encrypt-files my-secrets
+git-secret-protector --json status   # flag position before or after subcommand is equivalent
+```
+
+### 5. Logging
 
 Logs are stored in the `.git_secret_protector/logs/` directory by default, and you can configure the log level and file rotation in the `config.ini` file.
 
