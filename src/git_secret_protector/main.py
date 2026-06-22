@@ -275,7 +275,6 @@ def main():
     output = Output(
         quiet=getattr(args, "quiet", False),
         verbose=getattr(args, "verbose", False),
-        # --json is accepted both before and after the subcommand; OR the two values
         json=getattr(args, "json", False),
     )
 
