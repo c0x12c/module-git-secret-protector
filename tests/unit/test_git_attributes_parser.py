@@ -1,6 +1,8 @@
 import builtins
+import os
+import tempfile
 import unittest
-from unittest.mock import patch, mock_open
+from unittest.mock import patch, mock_open, Mock
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 
@@ -75,6 +77,58 @@ database/*.sql filter=sqlfilter
             # Assert that all secret files from all filters are returned
             self.assertIn("/fake/repo/config/app.conf", secret_files)
             self.assertIn("/fake/repo/database/test.sql", secret_files)
+
+
+class TestGitAttributesParserBaseDirAnchoring(unittest.TestCase):
+    """Globbing must be anchored to settings.base_dir, not the process cwd.
+
+    Regression: running from a subdirectory of the repo previously scanned only
+    from cwd, missing files elsewhere in the repo (status/doctor fail-open).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base_dir = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+        with _REAL_OPEN(os.path.join(self.base_dir, ".gitattributes"), "w") as f:
+            f.write("*.secret filter=secretfilter\n")
+            f.write("config/*.conf filter=configfilter\n")
+
+        with _REAL_OPEN(os.path.join(self.base_dir, "a.secret"), "w") as f:
+            f.write("x")
+        os.mkdir(os.path.join(self.base_dir, "config"))
+        with _REAL_OPEN(os.path.join(self.base_dir, "config", "app.conf"), "w") as f:
+            f.write("x")
+
+        # Run from a subdirectory so an unanchored ('.') glob would miss everything.
+        sub = os.path.join(self.base_dir, "sub")
+        os.mkdir(sub)
+        prev_cwd = os.getcwd()
+        os.chdir(sub)
+        self.addCleanup(os.chdir, prev_cwd)
+
+        stub_settings = Mock()
+        stub_settings.base_dir = self.base_dir
+        patcher = patch(
+            "git_secret_protector.core.git_attributes_parser.get_settings",
+            return_value=stub_settings,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_get_secret_files_anchored_to_base_dir_from_subdir(self):
+        parser = GitAttributesParser()
+        found = parser.get_secret_files()
+
+        self.assertIn(os.path.join(self.base_dir, "a.secret"), found)
+        self.assertIn(os.path.join(self.base_dir, "config", "app.conf"), found)
+
+    def test_get_files_for_filter_anchored_to_base_dir_from_subdir(self):
+        parser = GitAttributesParser()
+        found = parser.get_files_for_filter("secretfilter")
+
+        self.assertEqual(found, [os.path.join(self.base_dir, "a.secret")])
 
 
 if __name__ == "__main__":

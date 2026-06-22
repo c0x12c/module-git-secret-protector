@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 class GitAttributesParser:
     def __init__(self):
         settings = get_settings()
-        self.git_attributes_file = os.path.join(settings.base_dir, '.gitattributes')
+        self.base_dir = settings.base_dir
+        self.git_attributes_file = os.path.join(settings.base_dir, ".gitattributes")
         self._patterns = None
 
     @property
@@ -21,15 +22,17 @@ class GitAttributesParser:
             self._patterns = self._parse_patterns()
         return self._patterns
 
-    def get_secret_files(self, repo_root='.'):
+    def get_secret_files(self, repo_root=None):
         """Return all files matching any of the filter patterns."""
+        repo_root = self.base_dir if repo_root is None else repo_root
         secret_files = set()
         for patterns in self.patterns.values():
             secret_files.update(self._find_files_matching_patterns(patterns, repo_root))
         return list(secret_files)
 
-    def get_files_for_filter(self, filter_name, repo_root='.'):
+    def get_files_for_filter(self, filter_name, repo_root=None):
         """Return all files matching the patterns for a specific filter name."""
+        repo_root = self.base_dir if repo_root is None else repo_root
         patterns = self.patterns.get(filter_name, [])
         return self._find_files_matching_patterns(patterns, repo_root)
 
@@ -37,8 +40,9 @@ class GitAttributesParser:
         """Return a list of unique filter names from the .gitattributes file."""
         return list(self.patterns.keys())
 
-    def get_filter_name_for_file(self, file_name, repo_root='.'):
+    def get_filter_name_for_file(self, file_name, repo_root=None):
         """Return the filter name that matches the given file name based on .gitattributes patterns."""
+        repo_root = self.base_dir if repo_root is None else repo_root
         for filter_name, patterns in self.patterns.items():
             for pattern in patterns:
                 if fnmatch.fnmatch(os.path.relpath(file_name, repo_root), pattern):
@@ -48,9 +52,9 @@ class GitAttributesParser:
     def _parse_patterns(self):
         """Parse the .gitattributes file to extract patterns associated with filters."""
         patterns = {}
-        with open(self.git_attributes_file, 'r') as file:
+        with open(self.git_attributes_file, "r") as file:
             for line in file:
-                match = re.search(r'(.+)\s+filter=(\S+)', line)
+                match = re.search(r"(.+)\s+filter=(\S+)", line)
                 if match:
                     pattern = match.group(1).strip()
                     filter_name = match.group(2).strip()
@@ -59,8 +63,9 @@ class GitAttributesParser:
                     patterns[filter_name].append(pattern)
         return patterns
 
-    def _find_files_matching_patterns(self, patterns, repo_root='.'):
+    def _find_files_matching_patterns(self, patterns, repo_root=None):
         """Helper method to find files matching given patterns using glob."""
+        repo_root = self.base_dir if repo_root is None else repo_root
         matched_files = set()  # Using a set to avoid duplicates
         for pattern in patterns:
             files = glob.glob(os.path.join(repo_root, pattern), recursive=True)
