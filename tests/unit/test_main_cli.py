@@ -108,3 +108,138 @@ def test_help_includes_typical_workflow_epilog(tmp_path):
 
     assert result.returncode == 0
     assert "Typical workflow" in result.stdout
+
+
+def test_quiet_and_verbose_conflict_exits_2(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    result = _run_main(
+        ["--repo-root", str(repo), "--quiet", "--verbose", "status"], tmp_path
+    )
+    assert result.returncode == 2
+    assert "quiet" in result.stderr.lower()
+
+
+def test_json_flag_after_subcommand_parses(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    result = _run_main(["--repo-root", str(repo), "status", "--json"], tmp_path)
+    assert result.returncode == 0
+    import json
+
+    json.loads(result.stdout)  # stdout is a valid JSON document
+
+
+def test_repo_root_after_subcommand_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    (repo / "example.secret").write_text("plain\n")
+
+    result = _run_main(["status", "--repo-root", str(repo)], tmp_path)
+
+    assert result.returncode == 0
+    assert "Filter: secret" in result.stdout
+
+
+def test_quiet_after_subcommand_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+
+    # --repo-root before subcommand, --quiet after - both must parse
+    result = _run_main(["--repo-root", str(repo), "status", "--quiet"], tmp_path)
+
+    # quiet suppresses info output but command must succeed
+    assert result.returncode == 0
+    # no "Filter:" line in quiet mode - success is returncode 0 with no error
+    assert "git repository" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# stdout-purity guard: encrypt/decrypt must never mix log/status bytes into
+# the payload stream regardless of output flags.
+# ---------------------------------------------------------------------------
+
+import base64
+import json
+import os as _os
+
+
+def _seed_key_cache(repo, filter_name: str) -> None:
+    """Write a local AES key cache so the CLI never touches a storage backend."""
+    cache_dir = repo / ".git_secret_protector" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key_data = {
+        "aes_key": base64.b64encode(_os.urandom(32)).decode(),
+        "iv": base64.b64encode(_os.urandom(16)).decode(),
+        "version": 2,
+    }
+    cache_file = cache_dir / f"{filter_name}_key_iv.json"
+    cache_file.write_text(json.dumps(key_data))
+    cache_file.chmod(0o600)
+
+
+def _run_filter(args, cwd, stdin_bytes):
+    """Run the CLI in binary mode; used for encrypt/decrypt filter commands."""
+    env = _os.environ.copy()
+    env.pop("SECRET_PROTECTOR_BASE_DIR", None)
+    pythonpath = str(ROOT / "src")
+    env["PYTHONPATH"] = (
+        f"{pythonpath}{_os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH")
+        else pythonpath
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "git_secret_protector.main", *args],
+        cwd=str(cwd),
+        env=env,
+        input=stdin_bytes,
+        capture_output=True,
+        # No text=True - we need raw bytes on stdout
+    )
+
+
+def test_encrypt_decrypt_stdout_is_pure_bytes_under_all_flags(tmp_path):
+    """encrypt/decrypt stdout must equal exact payload bytes for every flag combo."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+
+    # Seed the local key cache so the CLI never contacts AWS/GCP.
+    # Must happen before the first CLI run (init_module_folder creates the dirs,
+    # but _seed_key_cache creates them too via parents=True so order doesn't matter).
+    _seed_key_cache(repo, "secret")
+
+    plaintext = b"hello-secret-payload"
+
+    flag_sets = [
+        [],
+        ["--json"],
+        ["--quiet"],
+        ["--verbose"],
+    ]
+
+    for flags in flag_sets:
+        enc = _run_filter(
+            [*flags, "encrypt", "x.secret"], cwd=repo, stdin_bytes=plaintext
+        )
+        assert enc.returncode == 0, f"encrypt failed (flags={flags}): {enc.stderr!r}"
+        ciphertext = enc.stdout
+        assert ciphertext != plaintext, f"encrypt produced plaintext (flags={flags})"
+
+        dec = _run_filter(
+            [*flags, "decrypt", "x.secret"], cwd=repo, stdin_bytes=ciphertext
+        )
+        assert dec.returncode == 0, f"decrypt failed (flags={flags}): {dec.stderr!r}"
+        assert dec.stdout == plaintext, (
+            f"stdout purity violated with flags={flags}: "
+            f"got {dec.stdout[:60]!r}, expected {plaintext!r}"
+        )

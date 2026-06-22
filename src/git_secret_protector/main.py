@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
+from git_secret_protector.core.output import Output
 from git_secret_protector.core.settings import Settings, get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
@@ -113,11 +114,46 @@ def doctor_command(_):
     sys.exit(manager.doctor())
 
 
-def show_project_version(_):
-    EncryptionManager.show_project_version()
+def show_project_version(args, output=None):
+    EncryptionManager.show_project_version(args, output)
 
 
 def main():
+    # Shared parent inherited by both the top-level parser and every subparser.
+    # SUPPRESS means an absent flag sets NO attribute, so a subparser parse
+    # cannot clobber a value already captured by the top-level parse.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--repo-root",
+        type=str,
+        default=argparse.SUPPRESS,
+        help=(
+            "Repo root to operate on (overrides auto-detection; same as the "
+            "SECRET_PROTECTOR_BASE_DIR env var)."
+        ),
+    )
+    common.add_argument(
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress success/info output (errors still shown).",
+    )
+    common.add_argument(
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Show internal logs on stderr.",
+    )
+    common.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Emit machine-readable JSON (status/doctor/version and "
+            "action results; ignored for encrypt/decrypt)."
+        ),
+    )
+
     parser = argparse.ArgumentParser(
         description=(
             "Encrypt selected repository files transparently with Git filters and "
@@ -128,27 +164,19 @@ def main():
             "  1. create .gitattributes mapping globs to filters\n"
             "  2. git-secret-protector setup-filters\n"
             "  3. git-secret-protector setup-aes-key <filter>\n"
-            "  4. edit/commit — files are encrypted transparently\n"
+            "  4. edit/commit - files are encrypted transparently\n"
             "Team member:\n"
             "  git-secret-protector pull-aes-key <filter> && "
             "git-secret-protector setup-filters"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
     )
     parser.add_argument(
         "-V",
         "--version",
         action="version",
         version=f"git-secret-protector {_safe_version()}",
-    )
-    parser.add_argument(
-        "--repo-root",
-        type=str,
-        default=None,
-        help=(
-            "Repo root to operate on (overrides auto-detection; same as the "
-            "SECRET_PROTECTOR_BASE_DIR env var). Must precede the subcommand."
-        ),
     )
     subparsers = parser.add_subparsers(help="Available commands")
 
@@ -171,13 +199,15 @@ def main():
 
     # Command to set up Git filters
     parser_setup_filters_stdin = subparsers.add_parser(
-        "setup-filters", help="Set up Git filters in Git config"
+        "setup-filters",
+        help="Set up Git filters in Git config",
+        parents=[common],
     )
     parser_setup_filters_stdin.set_defaults(func=setup_filters)
 
     # Command to decrypt data from stdin
     parser_decrypt_stdin = subparsers.add_parser(
-        "decrypt", help="Decrypt data from stdin"
+        "decrypt", help="Decrypt data from stdin", parents=[common]
     )
     parser_decrypt_stdin.add_argument(
         "file_name", type=str, help="Filename for decryption"
@@ -186,7 +216,7 @@ def main():
 
     # Command to encrypt data from stdin
     parser_encrypt_stdin = subparsers.add_parser(
-        "encrypt", help="Encrypt data from stdin"
+        "encrypt", help="Encrypt data from stdin", parents=[common]
     )
     parser_encrypt_stdin.add_argument(
         "file_name", type=str, help="Filename for encryption"
@@ -194,14 +224,16 @@ def main():
     parser_encrypt_stdin.set_defaults(func=encrypt_stdin)
 
     for cmd_name, func, help_text in filter_commands:
-        parser_cmd = subparsers.add_parser(cmd_name, help=help_text)
+        parser_cmd = subparsers.add_parser(cmd_name, help=help_text, parents=[common])
         parser_cmd.add_argument(
             "filter_name", type=str, nargs="?", help="The filter name"
         )
         parser_cmd.set_defaults(func=func)
 
     parser_rotate_key = subparsers.add_parser(
-        "rotate-key", help="Rotate AES key and re-encrypt secrets"
+        "rotate-key",
+        help="Rotate AES key and re-encrypt secrets",
+        parents=[common],
     )
     parser_rotate_key.add_argument(
         "filter_name", type=str, nargs="?", help="The filter name"
@@ -216,43 +248,59 @@ def main():
 
     # Status command
     parser_status = subparsers.add_parser(
-        "status", help="List all filters and file statuses"
+        "status", help="List all filters and file statuses", parents=[common]
     )
     parser_status.set_defaults(func=status_command)
 
     parser_doctor = subparsers.add_parser(
-        "doctor", help="Diagnose the git-secret-protector setup"
+        "doctor", help="Diagnose the git-secret-protector setup", parents=[common]
     )
     parser_doctor.set_defaults(func=doctor_command)
 
     # Version command
-    parser_status = subparsers.add_parser("version", help="Show version")
-    parser_status.set_defaults(func=show_project_version)
+    parser_version = subparsers.add_parser(
+        "version", help="Show version", parents=[common]
+    )
+    parser_version.set_defaults(func=show_project_version)
 
     args = parser.parse_args()
-    if hasattr(args, "func"):
-        try:
-            if args.func is not show_project_version:
-                if args.repo_root:
-                    repo_root = Path(args.repo_root).resolve()
-                    if not repo_root.is_dir():
-                        print(
-                            f"Error: --repo-root points to a missing directory: {args.repo_root}",
-                            file=sys.stderr,
-                        )
-                        sys.exit(1)
-                    os.environ[Settings.BASE_DIR_ENV_VAR] = str(repo_root)
-                    os.chdir(repo_root)
-                init_module_folder()
-                configure_logging()
-                global manager
-                manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
-            args.func(args)
-        except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
+    if not hasattr(args, "func"):
         parser.print_help()
+        return
+
+    if getattr(args, "quiet", False) and getattr(args, "verbose", False):
+        print("Error: --quiet and --verbose are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+
+    output = Output(
+        quiet=getattr(args, "quiet", False),
+        verbose=getattr(args, "verbose", False),
+        json=getattr(args, "json", False),
+    )
+
+    try:
+        if args.func is not show_project_version:
+            if getattr(args, "repo_root", None):
+                repo_root = Path(args.repo_root).resolve()
+                if not repo_root.is_dir():
+                    print(
+                        f"Error: --repo-root points to a missing directory: {getattr(args, 'repo_root', '')}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                os.environ[Settings.BASE_DIR_ENV_VAR] = str(repo_root)
+                os.chdir(repo_root)
+            init_module_folder()
+            configure_logging(verbose=output.verbose)
+            GitSecretProtectorModule.set_output(output)
+            global manager
+            manager = GitSecretProtectorModule.get_injector().get(EncryptionManager)
+            args.func(args)
+        else:
+            show_project_version(args, output)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
