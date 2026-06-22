@@ -531,6 +531,23 @@ class TestEncryptionManagerService(unittest.TestCase):
             self.manager.setup_aes_key("secret")
         self.assertIn("Successfully set up AES key for filter: secret", out.getvalue())
 
+    def test_setup_filters_json_error_envelope_and_exit_when_parser_raises(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.side_effect = RuntimeError(
+            "no attrs"
+        )
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.setup_filters()
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["command"], "setup-filters")
+        self.assertIn("no attrs", payload["error"])
+
 
 class TestMain(unittest.TestCase):
     @patch("git_secret_protector.main.EncryptionManager.show_project_version")

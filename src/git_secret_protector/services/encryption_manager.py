@@ -93,14 +93,20 @@ class EncryptionManager:
             sys.exit(1)
 
     def setup_filters(self):
-        logger.info("Setting up filters")
-        filter_names = self.git_attributes_parser.get_filter_names()
-        for filter_name in filter_names:
-            self.__init_filter(filter_name=filter_name)
-        logger.info("Successfully set up filters")
-        msg = "Successfully set up filters"
-        self.output.info(msg)
-        self.output.result(self._envelope_ok("setup-filters", message=msg))
+        try:
+            logger.info("Setting up filters")
+            filter_names = self.git_attributes_parser.get_filter_names()
+            for filter_name in filter_names:
+                self.__init_filter(filter_name=filter_name)
+            logger.info("Successfully set up filters")
+            msg = "Successfully set up filters"
+            self.output.info(msg)
+            self.output.result(self._envelope_ok("setup-filters", message=msg))
+        except Exception as e:
+            logger.error(f"Setup filters command failed: {e}", exc_info=True)
+            self.output.error(f"Setup filters command failed: {e}")
+            self.output.result(self._envelope_err("setup-filters", str(e)))
+            sys.exit(1)
 
     def pull_aes_key(self, filter_name: str):
         filter_name = self._require_filter(filter_name)

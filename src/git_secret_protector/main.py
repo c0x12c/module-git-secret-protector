@@ -119,44 +119,35 @@ def show_project_version(args, output=None):
 
 
 def main():
-    # Parent with global flags that appear BEFORE the subcommand.
-    # --repo-root/--quiet/--verbose live here only so subparser defaults
-    # don't shadow the top-level parsed value.
-    global_flags = argparse.ArgumentParser(add_help=False)
-    global_flags.add_argument(
+    # Shared parent inherited by both the top-level parser and every subparser.
+    # SUPPRESS means an absent flag sets NO attribute, so a subparser parse
+    # cannot clobber a value already captured by the top-level parse.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
         "--repo-root",
         type=str,
-        default=None,
+        default=argparse.SUPPRESS,
         help=(
             "Repo root to operate on (overrides auto-detection; same as the "
-            "SECRET_PROTECTOR_BASE_DIR env var). Must precede the subcommand."
+            "SECRET_PROTECTOR_BASE_DIR env var)."
         ),
     )
-    global_flags.add_argument(
+    common.add_argument(
         "--quiet",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Suppress success/info output (errors still shown).",
     )
-    global_flags.add_argument(
+    common.add_argument(
         "--verbose",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Show internal logs on stderr.",
     )
-    global_flags.add_argument(
+    common.add_argument(
         "--json",
         action="store_true",
-        help=(
-            "Emit machine-readable JSON (status/doctor/version and "
-            "action results; ignored for encrypt/decrypt)."
-        ),
-    )
-
-    # Parent with --json only, inherited by subparsers so the flag is also
-    # accepted AFTER the subcommand (e.g. `status --json`).
-    json_flag = argparse.ArgumentParser(add_help=False)
-    json_flag.add_argument(
-        "--json",
-        action="store_true",
+        default=argparse.SUPPRESS,
         help=(
             "Emit machine-readable JSON (status/doctor/version and "
             "action results; ignored for encrypt/decrypt)."
@@ -179,7 +170,7 @@ def main():
             "git-secret-protector setup-filters"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        parents=[global_flags],
+        parents=[common],
     )
     parser.add_argument(
         "-V",
@@ -210,13 +201,13 @@ def main():
     parser_setup_filters_stdin = subparsers.add_parser(
         "setup-filters",
         help="Set up Git filters in Git config",
-        parents=[json_flag],
+        parents=[common],
     )
     parser_setup_filters_stdin.set_defaults(func=setup_filters)
 
     # Command to decrypt data from stdin
     parser_decrypt_stdin = subparsers.add_parser(
-        "decrypt", help="Decrypt data from stdin", parents=[json_flag]
+        "decrypt", help="Decrypt data from stdin", parents=[common]
     )
     parser_decrypt_stdin.add_argument(
         "file_name", type=str, help="Filename for decryption"
@@ -225,7 +216,7 @@ def main():
 
     # Command to encrypt data from stdin
     parser_encrypt_stdin = subparsers.add_parser(
-        "encrypt", help="Encrypt data from stdin", parents=[json_flag]
+        "encrypt", help="Encrypt data from stdin", parents=[common]
     )
     parser_encrypt_stdin.add_argument(
         "file_name", type=str, help="Filename for encryption"
@@ -233,9 +224,7 @@ def main():
     parser_encrypt_stdin.set_defaults(func=encrypt_stdin)
 
     for cmd_name, func, help_text in filter_commands:
-        parser_cmd = subparsers.add_parser(
-            cmd_name, help=help_text, parents=[json_flag]
-        )
+        parser_cmd = subparsers.add_parser(cmd_name, help=help_text, parents=[common])
         parser_cmd.add_argument(
             "filter_name", type=str, nargs="?", help="The filter name"
         )
@@ -244,7 +233,7 @@ def main():
     parser_rotate_key = subparsers.add_parser(
         "rotate-key",
         help="Rotate AES key and re-encrypt secrets",
-        parents=[json_flag],
+        parents=[common],
     )
     parser_rotate_key.add_argument(
         "filter_name", type=str, nargs="?", help="The filter name"
@@ -259,18 +248,18 @@ def main():
 
     # Status command
     parser_status = subparsers.add_parser(
-        "status", help="List all filters and file statuses", parents=[json_flag]
+        "status", help="List all filters and file statuses", parents=[common]
     )
     parser_status.set_defaults(func=status_command)
 
     parser_doctor = subparsers.add_parser(
-        "doctor", help="Diagnose the git-secret-protector setup", parents=[json_flag]
+        "doctor", help="Diagnose the git-secret-protector setup", parents=[common]
     )
     parser_doctor.set_defaults(func=doctor_command)
 
     # Version command
     parser_version = subparsers.add_parser(
-        "version", help="Show version", parents=[json_flag]
+        "version", help="Show version", parents=[common]
     )
     parser_version.set_defaults(func=show_project_version)
 
@@ -292,11 +281,11 @@ def main():
 
     try:
         if args.func is not show_project_version:
-            if args.repo_root:
+            if getattr(args, "repo_root", None):
                 repo_root = Path(args.repo_root).resolve()
                 if not repo_root.is_dir():
                     print(
-                        f"Error: --repo-root points to a missing directory: {args.repo_root}",
+                        f"Error: --repo-root points to a missing directory: {getattr(args, 'repo_root', '')}",
                         file=sys.stderr,
                     )
                     sys.exit(1)

@@ -132,3 +132,31 @@ def test_json_flag_after_subcommand_parses(tmp_path):
     import json
 
     json.loads(result.stdout)  # stdout is a valid JSON document
+
+
+def test_repo_root_after_subcommand_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    (repo / "example.secret").write_text("plain\n")
+
+    result = _run_main(["status", "--repo-root", str(repo)], tmp_path)
+
+    assert result.returncode == 0
+    assert "Filter: secret" in result.stdout
+
+
+def test_quiet_after_subcommand_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+
+    # --repo-root before subcommand, --quiet after - both must parse
+    result = _run_main(["--repo-root", str(repo), "status", "--quiet"], tmp_path)
+
+    # quiet suppresses info output but command must succeed
+    assert result.returncode == 0
+    # no "Filter:" line in quiet mode - success is returncode 0 with no error
+    assert "git repository" not in result.stderr
