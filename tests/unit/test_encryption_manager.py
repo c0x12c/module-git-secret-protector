@@ -200,11 +200,12 @@ class TestEncryptionManagerService(unittest.TestCase):
             self.manager,
             "_EncryptionManager__get_encryption_handler",
             return_value=handler,
-        ):
+        ) as mock_get_handler:
             with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
                 self.manager.encrypt_stdin("secrets.env")
 
         self.assertEqual(stdout_buffer.getvalue(), b"ciphertext")
+        mock_get_handler.assert_called_once_with(filter_name="secret", cache_only=True)
 
     def test_pull_aes_key_exits_non_zero_when_retrieve_raises(self):
         self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("boom")
@@ -490,6 +491,40 @@ class TestEncryptionManagerService(unittest.TestCase):
             with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
                 self.manager.decrypt_stdin("secrets.env")
 
+        self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
+
+    def test_encrypt_stdin_cache_miss_uses_cache_only_lookup(self):
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        stdout_buffer = io.BytesIO()
+        stdin = SimpleNamespace(buffer=io.BytesIO(b"plain-secret"))
+        stdout = SimpleNamespace(buffer=stdout_buffer)
+        self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("cache miss")
+
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+            with self.assertRaises(SystemExit):
+                self.manager.encrypt_stdin("secrets.env")
+
+        self.key_manager.retrieve_key_and_iv.assert_called_once_with(
+            "secret", cache_only=True
+        )
+        self.key_manager.get_scheme.assert_not_called()
+        self.assertEqual(stdout_buffer.getvalue(), b"")
+
+    def test_decrypt_stdin_cache_miss_uses_cache_only_lookup(self):
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        encrypted_data = b"ciphertext"
+        stdout_buffer = io.BytesIO()
+        stdin = SimpleNamespace(buffer=io.BytesIO(encrypted_data))
+        stdout = SimpleNamespace(buffer=stdout_buffer)
+        self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("cache miss")
+
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+            self.manager.decrypt_stdin("secrets.env")
+
+        self.key_manager.retrieve_key_and_iv.assert_called_once_with(
+            "secret", cache_only=True
+        )
+        self.key_manager.get_scheme.assert_not_called()
         self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")

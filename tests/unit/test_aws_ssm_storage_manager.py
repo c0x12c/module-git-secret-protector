@@ -3,7 +3,10 @@ import unittest
 from unittest.mock import MagicMock
 
 from git_secret_protector.error.storage_error import StorageError
-from git_secret_protector.storage.aws_ssm_storage_manager import AwsSsmStorageManager
+from git_secret_protector.storage.aws_ssm_storage_manager import (
+    AwsSsmStorageManager,
+    _boto_config,
+)
 
 
 class TestAwsSsmStorageManager(unittest.TestCase):
@@ -47,6 +50,13 @@ class TestAwsSsmStorageManager(unittest.TestCase):
         result = self.manager.retrieve("/path/to/secret")
 
         self.assertEqual(result, value)
+
+    def test_boto_config_uses_fail_fast_timeouts(self):
+        config = _boto_config()
+
+        self.assertEqual(config.connect_timeout, 2)
+        self.assertEqual(config.read_timeout, 5)
+        self.assertEqual(config.retries["max_attempts"], 1)
 
 
 if __name__ == "__main__":

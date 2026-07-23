@@ -9,6 +9,7 @@ from git_secret_protector.storage.storage_manager_interface import (
 )
 
 logger = logging.getLogger(__name__)
+GCP_RPC_TIMEOUT_SECONDS = 5.0
 
 
 def _secretmanager():
@@ -96,7 +97,10 @@ class GcpSecretStorageManager(StorageManagerInterface):
             logger.info(
                 "Retrieving secret from GCP Secret Manager with ID: %s", secret_id
             )
-            response = self.client.access_secret_version(name=secret_id)
+            # Fail fast so a required git filter never hangs on backend RPCs.
+            response = self.client.access_secret_version(
+                name=secret_id, timeout=GCP_RPC_TIMEOUT_SECONDS
+            )
             return response.payload.data.decode("UTF-8")
         except NotFound:
             raise ValueError(f"Secret [name={name}] not found.")

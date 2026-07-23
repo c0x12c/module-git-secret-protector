@@ -90,7 +90,7 @@ class AesKeyManager:
     :raises AesKeyError: If there is any error during the deletion process
     """
 
-    def retrieve_key_and_iv(self, filter_name):
+    def retrieve_key_and_iv(self, filter_name, cache_only: bool = False):
         logger.info("Retrieve AES key and IV for filter: %s", filter_name)
 
         try:
@@ -103,11 +103,20 @@ class AesKeyManager:
                     local_data["iv"]
                 )
 
+            # Required git filters must stay cache-only so they never hang on network.
+            if cache_only:
+                raise AesKeyError(
+                    f"AES key for filter '{filter_name}' is not cached locally. "
+                    f"Run: git-secret-protector pull-aes-key {filter_name}"
+                )
+
             parameter_name = self._parameter_name(filter_name=filter_name)
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             self.cache_key_iv_locally(filter_name, json.dumps(data))
 
             return base64.b64decode(data["aes_key"]), base64.b64decode(data["iv"])
+        except AesKeyError:
+            raise
         except Exception as e:
             raise AesKeyError(
                 f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}"

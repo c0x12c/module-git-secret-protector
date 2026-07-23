@@ -272,7 +272,7 @@ class EncryptionManager:
                 sys.exit(1)
 
             encrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name
+                filter_name=filter_name, cache_only=True
             ).encrypt_data(input_data)
 
             sys.stdout.buffer.write(encrypted_data)
@@ -301,7 +301,7 @@ class EncryptionManager:
                 return
 
             decrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name
+                filter_name=filter_name, cache_only=True
             ).decrypt_data(encrypted_data)
             logger.debug("Decrypted file: %s", file_name)
 
@@ -899,8 +899,10 @@ class EncryptionManager:
             filter_name,
         )
 
-    def __get_encryption_handler(self, filter_name: str):
-        aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+    def __get_encryption_handler(self, filter_name: str, cache_only: bool = False):
+        aes_key, iv = self.key_manager.retrieve_key_and_iv(
+            filter_name, cache_only=cache_only
+        )
         scheme = self.key_manager.get_scheme(filter_name)
         return AesEncryptionHandler(
             aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme
