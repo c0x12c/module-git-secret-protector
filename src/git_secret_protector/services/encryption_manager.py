@@ -272,7 +272,7 @@ class EncryptionManager:
                 sys.exit(1)
 
             encrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name
+                filter_name=filter_name, cache_only=True
             ).encrypt_data(input_data)
 
             sys.stdout.buffer.write(encrypted_data)
@@ -282,6 +282,10 @@ class EncryptionManager:
             )
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
+            # stderr is safe for git filters (stdout carries the binary payload) and,
+            # unlike the file logger, is shown by git - so the cache-miss
+            # 'run pull-aes-key' hint actually reaches the user.
+            print(f"git-secret-protector: {e}", file=sys.stderr)
             sys.exit(1)
 
     def decrypt_stdin(self, file_name):
@@ -301,7 +305,7 @@ class EncryptionManager:
                 return
 
             decrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name
+                filter_name=filter_name, cache_only=True
             ).decrypt_data(encrypted_data)
             logger.debug("Decrypted file: %s", file_name)
 
@@ -312,6 +316,9 @@ class EncryptionManager:
             )
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
+            # Surface on stderr (git shows it) so a cache-miss key error is diagnosable;
+            # still pass the ciphertext through on stdout so checkout degrades, not hangs.
+            print(f"git-secret-protector: {e}", file=sys.stderr)
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 
@@ -899,8 +906,10 @@ class EncryptionManager:
             filter_name,
         )
 
-    def __get_encryption_handler(self, filter_name: str):
-        aes_key, iv = self.key_manager.retrieve_key_and_iv(filter_name)
+    def __get_encryption_handler(self, filter_name: str, cache_only: bool = False):
+        aes_key, iv = self.key_manager.retrieve_key_and_iv(
+            filter_name, cache_only=cache_only
+        )
         scheme = self.key_manager.get_scheme(filter_name)
         return AesEncryptionHandler(
             aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme

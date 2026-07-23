@@ -17,6 +17,13 @@ def _boto3():
     return boto3
 
 
+# Fail fast when AWS is unreachable so a required git filter never hangs for minutes.
+def _boto_config():
+    from botocore.config import Config
+
+    return Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 1})
+
+
 def _get_short_region(region):
     region_parts = region.split("-")
     return f"{region_parts[0][:2]}{region_parts[1][:2]}{region_parts[2]}"
@@ -32,7 +39,7 @@ class AwsSsmStorageManager(StorageManagerInterface):
     def account_id(self):
         if self._account_id is None:
             try:
-                sts_client = _boto3().client("sts")
+                sts_client = _boto3().client("sts", config=_boto_config())
                 self._account_id = sts_client.get_caller_identity().get("Account")
             except NoCredentialsError:
                 raise StorageError(
@@ -56,7 +63,7 @@ class AwsSsmStorageManager(StorageManagerInterface):
     def client(self):
         if self._client is None:
             try:
-                self._client = _boto3().client("ssm")
+                self._client = _boto3().client("ssm", config=_boto_config())
             except NoRegionError:
                 raise StorageError(
                     "No AWS region configured. Please ensure your terminal is logged in to AWS."

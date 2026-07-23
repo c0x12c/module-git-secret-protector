@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError
 
 from git_secret_protector.core.settings import StorageType
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.error.aes_key_error import AesKeyError
 
 
 class TestAesKeyManager(unittest.TestCase):
@@ -96,6 +97,34 @@ class TestAesKeyManager(unittest.TestCase):
         self.assertEqual(oct(os.stat(cache_path).st_mode & 0o777), "0o600")
 
         data = json.loads(json_data)
+        self.assertEqual(aes_key, base64.b64decode(data["aes_key"]))
+        self.assertEqual(iv, base64.b64decode(data["iv"]))
+
+    @patch("os.path.exists", return_value=False)
+    def test_retrieve_key_and_iv_cache_only_miss_raises_with_pull_hint(self, _):
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+
+        with self.assertRaises(AesKeyError) as context:
+            self.aes_key_manager.retrieve_key_and_iv(filter_name, cache_only=True)
+
+        self.mock_storage_manager.retrieve.assert_not_called()
+        self.assertIn("pull-aes-key", str(context.exception))
+
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    def test_retrieve_key_and_iv_cache_only_hit_uses_cache(self, mock_open, _):
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        mock_open.return_value.read.return_value = json_data
+
+        aes_key, iv = self.aes_key_manager.retrieve_key_and_iv(
+            filter_name, cache_only=True
+        )
+
+        data = json.loads(json_data)
+        self.mock_storage_manager.retrieve.assert_not_called()
         self.assertEqual(aes_key, base64.b64decode(data["aes_key"]))
         self.assertEqual(iv, base64.b64decode(data["iv"]))
 

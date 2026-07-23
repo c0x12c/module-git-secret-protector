@@ -9,6 +9,7 @@ from git_secret_protector.storage.storage_manager_interface import (
 )
 
 logger = logging.getLogger(__name__)
+GCP_RPC_TIMEOUT_SECONDS = 5.0
 
 
 def _secretmanager():
@@ -63,7 +64,10 @@ class GcpSecretStorageManager(StorageManagerInterface):
         AlreadyExists, GoogleAPIError, NotFound = _google_exceptions()
         try:
             # Check if the secret already exists, otherwise create it
-            self.client.access_secret_version(name=f"{secret_id}/versions/latest")
+            self.client.access_secret_version(
+                name=f"{secret_id}/versions/latest",
+                timeout=GCP_RPC_TIMEOUT_SECONDS,
+            )
         except NotFound:
             # Create the secret if it doesn't exist
             try:
@@ -72,6 +76,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
                     parent=f"projects/{self.project_id}",
                     secret_id=name,
                     secret=Secret(replication={"automatic": {}}),
+                    timeout=GCP_RPC_TIMEOUT_SECONDS,
                 )
             except AlreadyExists:
                 raise ValueError(f"Secret with name [{name}] already exists.")
@@ -84,7 +89,9 @@ class GcpSecretStorageManager(StorageManagerInterface):
         try:
             _, SecretPayload = _secret_types()
             self.client.add_secret_version(
-                parent=secret_id, payload=SecretPayload({"data": value.encode("UTF-8")})
+                parent=secret_id,
+                payload=SecretPayload({"data": value.encode("UTF-8")}),
+                timeout=GCP_RPC_TIMEOUT_SECONDS,
             )
         except GoogleAPIError as e:
             raise StorageError(f"Failed to add secret version: {str(e)}") from e
@@ -96,7 +103,10 @@ class GcpSecretStorageManager(StorageManagerInterface):
             logger.info(
                 "Retrieving secret from GCP Secret Manager with ID: %s", secret_id
             )
-            response = self.client.access_secret_version(name=secret_id)
+            # Fail fast so a required git filter never hangs on backend RPCs.
+            response = self.client.access_secret_version(
+                name=secret_id, timeout=GCP_RPC_TIMEOUT_SECONDS
+            )
             return response.payload.data.decode("UTF-8")
         except NotFound:
             raise ValueError(f"Secret [name={name}] not found.")
@@ -109,7 +119,7 @@ class GcpSecretStorageManager(StorageManagerInterface):
         secret_id = f"projects/{self.project_id}/secrets/{name}"
         _, GoogleAPIError, NotFound = _google_exceptions()
         try:
-            self.client.delete_secret(name=secret_id)
+            self.client.delete_secret(name=secret_id, timeout=GCP_RPC_TIMEOUT_SECONDS)
         except NotFound:
             raise ValueError(f"Secret [name={name}] not found.")
         except GoogleAPIError as e:
@@ -121,7 +131,10 @@ class GcpSecretStorageManager(StorageManagerInterface):
         secret_id = f"projects/{self.project_id}/secrets/{name}"
         _, GoogleAPIError, NotFound = _google_exceptions()
         try:
-            self.client.access_secret_version(name=f"{secret_id}/versions/latest")
+            self.client.access_secret_version(
+                name=f"{secret_id}/versions/latest",
+                timeout=GCP_RPC_TIMEOUT_SECONDS,
+            )
             return True
         except NotFound:
             return False
