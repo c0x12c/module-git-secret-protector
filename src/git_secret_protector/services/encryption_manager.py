@@ -282,6 +282,10 @@ class EncryptionManager:
             )
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
+            # stderr is safe for git filters (stdout carries the binary payload) and,
+            # unlike the file logger, is shown by git - so the cache-miss
+            # 'run pull-aes-key' hint actually reaches the user.
+            print(f"git-secret-protector: {e}", file=sys.stderr)
             sys.exit(1)
 
     def decrypt_stdin(self, file_name):
@@ -312,6 +316,9 @@ class EncryptionManager:
             )
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
+            # Surface on stderr (git shows it) so a cache-miss key error is diagnosable;
+            # still pass the ciphertext through on stdout so checkout degrades, not hangs.
+            print(f"git-secret-protector: {e}", file=sys.stderr)
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
 

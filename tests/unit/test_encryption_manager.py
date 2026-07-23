@@ -527,6 +527,41 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.key_manager.get_scheme.assert_not_called()
         self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
 
+    def test_encrypt_stdin_cache_miss_prints_hint_to_stderr(self):
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        stdin = SimpleNamespace(buffer=io.BytesIO(b"plain-secret"))
+        stdout = SimpleNamespace(buffer=io.BytesIO())
+        stderr = io.StringIO()
+        self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError(
+            "AES key for filter 'secret' is not cached locally. "
+            "Run: git-secret-protector pull-aes-key secret"
+        )
+
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), patch(
+            "sys.stderr", stderr
+        ):
+            with self.assertRaises(SystemExit):
+                self.manager.encrypt_stdin("secrets.env")
+
+        self.assertIn("pull-aes-key", stderr.getvalue())
+
+    def test_decrypt_stdin_cache_miss_prints_hint_to_stderr(self):
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        stdin = SimpleNamespace(buffer=io.BytesIO(b"ciphertext"))
+        stdout = SimpleNamespace(buffer=io.BytesIO())
+        stderr = io.StringIO()
+        self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError(
+            "AES key for filter 'secret' is not cached locally. "
+            "Run: git-secret-protector pull-aes-key secret"
+        )
+
+        with patch("sys.stdin", stdin), patch("sys.stdout", stdout), patch(
+            "sys.stderr", stderr
+        ):
+            self.manager.decrypt_stdin("secrets.env")
+
+        self.assertIn("pull-aes-key", stderr.getvalue())
+
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_setup_filters_sets_required_for_existing_filter(self, mock_run):
         self.git_attributes_parser.get_filter_names.return_value = ["secret"]
