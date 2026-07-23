@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.5.1] - 2026-07-23
+
+- fix: cache-only git filters + fast backend timeouts to prevent required-filter hang (#97)
+
 ## [1.5.0] - 2026-06-22
 
 - docs: refresh CLAUDE.md for scheme versioning + output flags + init/doctor (#96)
