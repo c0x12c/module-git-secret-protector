@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.7.0](https://github.com/c0x12c/module-git-secret-protector/compare/v1.6.0...v1.7.0) (2026-07-27)
+
+
+### Features
+
+* configurable encryption scheme via config.ini ([#100](https://github.com/c0x12c/module-git-secret-protector/issues/100)) ([6653eb5](https://github.com/c0x12c/module-git-secret-protector/commit/6653eb52eeaf681209cfe5275b68264169d8d7c5))
+
 ## [1.6.0] - 2026-07-27
 
 ### Security
