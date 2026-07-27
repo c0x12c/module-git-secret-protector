@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 import injector
 
@@ -73,7 +74,7 @@ class EncryptionManager:
         self.output.error(f"Error: {msg}")
         sys.exit(1)
 
-    def setup_aes_key(self, filter_name: str, scheme: str = None):
+    def setup_aes_key(self, filter_name: str, scheme: Optional[str] = None):
         # Precedence: explicit --scheme flag > config encryption_scheme > built-in v2.
         if scheme is None:
             scheme = get_settings().encryption_scheme

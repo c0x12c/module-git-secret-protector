@@ -95,6 +95,7 @@ class TestEncryptionManagerService(unittest.TestCase):
         mock_settings.storage_type.value = "AWS_SSM"
         mock_settings.module_name = "git-secret-protector"
         mock_settings.base_dir = "/repo/root"
+        mock_settings.encryption_scheme = "v2"
         mock_get_settings.return_value = mock_settings
 
         self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
@@ -1101,6 +1102,7 @@ class TestUpgradeScheme(unittest.TestCase):
         mock_settings.storage_type.value = "AWS_SSM"
         mock_settings.module_name = "git-secret-protector"
         mock_settings.base_dir = "/repo/root"
+        mock_settings.encryption_scheme = "v2"
         mock_get_settings.return_value = mock_settings
 
         self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
