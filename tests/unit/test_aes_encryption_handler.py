@@ -124,5 +124,99 @@ class TestAesEncryptionHandlerScheme(unittest.TestCase):
                 self.assertIs(h.encrypt_data(already), already)
 
 
+class TestAesEncryptionHandlerGoldenFixtures(unittest.TestCase):
+    """Backward-compat proof: literal ciphertext bytes produced by the pre-hardening
+    code (v1.5.0 master) with a hardcoded key must still decrypt under the current
+    code. Regenerating these from the current code would prove nothing - they are
+    frozen on purpose."""
+
+    KEY = bytes(range(32))  # 00..1f
+    IV = bytes(range(16))  # 00..0f
+    MH = b"ENCRYPTED"
+    PLAINTEXT = b"backward-compat golden fixture"
+
+    V1_GOLDEN = b"ENCRYPTEDJ8fMYTUNoWdWvtiyXcSsE7tDAw0NSoUUn3P5i1YlA5c="
+    V2_GOLDEN = (
+        b"ENCRYPTED\x02ldLCW5bTJp/htsDSGRI3lkvFVsydpDLPItnpjFbWp7lNtPxib0cQ6B+"
+        b"IC8AR2iDKOIDMZks0CM+Z067FQDsVvALrRh5QJal/FTzKZXfW"
+    )
+
+    def _handler(self):
+        return AesEncryptionHandler(aes_key=self.KEY, iv=self.IV, magic_header=self.MH)
+
+    def test_v1_golden_blob_decrypts(self):
+        self.assertEqual(self._handler().decrypt_data(self.V1_GOLDEN), self.PLAINTEXT)
+
+    def test_v2_golden_blob_decrypts(self):
+        self.assertEqual(self._handler().decrypt_data(self.V2_GOLDEN), self.PLAINTEXT)
+
+    def test_v1_output_bytes_are_frozen(self):
+        h = AesEncryptionHandler(
+            aes_key=self.KEY, iv=self.IV, magic_header=self.MH, scheme="v1"
+        )
+        self.assertEqual(h.encrypt_data(self.PLAINTEXT), self.V1_GOLDEN)
+
+    def test_v2_output_bytes_are_frozen(self):
+        h = AesEncryptionHandler(
+            aes_key=self.KEY, iv=self.IV, magic_header=self.MH, scheme="v2"
+        )
+        self.assertEqual(h.encrypt_data(self.PLAINTEXT), self.V2_GOLDEN)
+
+
+class TestAesEncryptionHandlerDispatchHardening(unittest.TestCase):
+    """Fail-closed dispatch: unknown/newer wire formats must not be silently fed to
+    the unauthenticated v1 CBC path, and truncated v2 payloads must fail clearly."""
+
+    def setUp(self):
+        self.magic_header = b"GSP"
+        self.aes_key = secrets.token_bytes(32)
+        self.iv = secrets.token_bytes(AES.block_size)
+        self.handler = AesEncryptionHandler(
+            aes_key=self.aes_key,
+            iv=self.iv,
+            magic_header=self.magic_header,
+        )
+
+    def test_unknown_version_byte_fails_closed(self):
+        # 0x03 (and any control byte < 0x2B that is not 0x02) means "newer client".
+        blob = self.magic_header + b"\x03" + base64.b64encode(b"whatever-payload")
+
+        with self.assertRaisesRegex(ValueError, "newer git-secret-protector client"):
+            self.handler.decrypt_data(blob)
+
+    def test_stripped_v2_version_byte_does_not_silently_cbc(self):
+        # Strip the 0x02 marker; the remaining base64 first byte routes to v1 CBC
+        # (the documented, unfixable-without-migration downgrade surface), and that
+        # path fails authentication/padding rather than emitting silent garbage.
+        v2 = self.handler.encrypt_data(b"authenticated secret")
+        stripped = self.magic_header + v2[len(self.magic_header) + 1 :]
+
+        with self.assertRaises(ValueError):
+            self.handler.decrypt_data(stripped)
+
+    def test_truncated_v2_payload_fails_with_clear_message(self):
+        short = self.magic_header + self.handler.V2 + base64.b64encode(b"tooshort")
+
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            self.handler.decrypt_data(short)
+
+    def test_empty_v2_plaintext_round_trips(self):
+        encrypted = self.handler.encrypt_data(b"")
+        self.assertEqual(self.handler.decrypt_data(encrypted), b"")
+
+    def test_tampered_version_byte_to_unknown_fails_closed(self):
+        v2 = self.handler.encrypt_data(b"secret")
+        tampered = self.magic_header + b"\x04" + v2[len(self.magic_header) + 1 :]
+
+        with self.assertRaisesRegex(ValueError, "newer git-secret-protector client"):
+            self.handler.decrypt_data(tampered)
+
+    def test_plaintext_beginning_with_magic_header_is_skipped(self):
+        # Documents current idempotency behavior: a plaintext that itself begins with
+        # the magic header is treated as already-encrypted and passed through.
+        data = self.magic_header + b"looks encrypted but is not"
+        self.assertIs(self.handler.encrypt_data(data), data)
+
+
 if __name__ == "__main__":
     unittest.main()

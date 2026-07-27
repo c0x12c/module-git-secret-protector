@@ -178,7 +178,10 @@ class AesKeyManager:
         """Return "v1" or "v2" for the scheme stored in the key blob.
 
         Tries the local cache first; falls back to the storage backend.
-        A missing or unrecognised version field defaults to "v2" (safe default).
+        A *missing* version field defaults to "v2" (legacy-ambiguous blobs predate
+        versioning; do not regress them). A *newer* numeric version (>= 3) fails
+        closed instead of silently masquerading as v2, so an old client refuses a
+        blob it cannot understand rather than encrypting under the wrong scheme.
         A completely missing key blob still raises AesKeyError (same as retrieve_key_and_iv).
         """
         try:
@@ -189,7 +192,16 @@ class AesKeyManager:
                     self._get_storage_manager().retrieve(name=parameter_name)
                 )
             version = data.get("version", 2)
-            return "v1" if version == 1 else "v2"
+            if version == 1:
+                return "v1"
+            if version == 2:
+                return "v2"
+            raise AesKeyError(
+                f"Key blob for filter '{filter_name}' has version {version}, newer "
+                f"than this client supports; upgrade git-secret-protector."
+            )
+        except AesKeyError:
+            raise
         except Exception as e:
             raise AesKeyError(
                 f"Failed to get scheme for filter '{filter_name}': {str(e)}"
