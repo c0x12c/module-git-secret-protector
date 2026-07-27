@@ -637,7 +637,7 @@ class TestEncryptionManagerService(unittest.TestCase):
                 "ok": True,
                 "command": "setup-aes-key",
                 "filter": "secret",
-                "scheme": "v2",
+                "scheme": "v1",  # built-in default when no --scheme/config
                 "message": "Successfully set up AES key for filter: secret",
             },
         )

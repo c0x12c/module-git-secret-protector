@@ -29,7 +29,7 @@ class Settings:
     log_backup_count: int = 3
     magic_header: str = "ENCRYPTED"
     storage_type: StorageType = StorageType.AWS_SSM
-    encryption_scheme: str = "v2"
+    encryption_scheme: str = "v1"
     config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
