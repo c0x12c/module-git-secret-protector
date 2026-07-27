@@ -9,12 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 <!--
-Add entries here as you land changes. To RELEASE, rename this heading to
-`## [x.y.z] - YYYY-MM-DD` in your own PR (no separate release PR needed): when it
-merges to master, release.yml cuts the tag + GitHub Release + PyPI publish and
-bumps pyproject.toml. Leave this heading as `[Unreleased]` to keep accumulating
-without releasing. Every PR must touch this file (changelog-touched.yml); use
-`[skip changelog]` in the PR body to opt out.
+Add entries here as you land changes. To RELEASE, rename this heading to a
+versioned one in your own PR (no separate release PR needed): the release only
+requires the `## [x.y.z]` prefix - the ` - YYYY-MM-DD` date is optional but
+recommended (e.g. `## [1.8.0] - 2026-08-01`). When it merges to master,
+release.yml cuts the tag + GitHub Release + PyPI publish and bumps pyproject.toml.
+Leave this heading as `[Unreleased]` to keep accumulating without releasing.
+Every PR must touch this file (changelog-touched.yml); use `[skip changelog]` in
+the PR body to opt out.
 -->
 
 - Migrate the release flow to CHANGELOG-driven (`release.yml` + `changelog-touched.yml`), replacing release-please.

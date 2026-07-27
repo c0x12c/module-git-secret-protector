@@ -14,8 +14,10 @@ on:
     paths:
       - 'CHANGELOG.md'
 
+# All writes (version-bump push, tag, GitHub Release) use the App token below,
+# so the default GITHUB_TOKEN only needs read for the checkout.
 permissions:
-  contents: write # to push the version bump and publish a GitHub release
+  contents: read
 
 jobs:
   verify-changelog:
@@ -61,6 +63,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ steps.app-token.outputs.token }}
+          # Full history so the push to master and tag creation are not shallow.
+          fetch-depth: 0
 
       # Extract the first (latest) versioned heading: `## [X.Y.Z]` or `## [vX.Y.Z]`.
       - name: Extract version from changelog
@@ -103,7 +107,8 @@ jobs:
         env:
           VERSION: ${{ env.VERSION }}
         run: |
-          VER_RE=$(printf '%s' "$VERSION" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')
+          # Use '#' as the sed delimiter so the '/' in the character class is unambiguous.
+          VER_RE=$(printf '%s' "$VERSION" | sed 's#[][\\.^$*+?(){}|/]#\\&#g')
           BODY=$(awk -v pat="^## \\\\[v?${VER_RE}\\\\]" '
             {
               if (found && (/^## \[/ || /^\[[^]]+\]:[[:space:]]/)) exit
