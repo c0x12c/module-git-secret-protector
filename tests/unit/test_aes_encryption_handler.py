@@ -6,6 +6,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 
 
 class TestAesEncryptionHandler(unittest.TestCase):
@@ -181,7 +182,9 @@ class TestAesEncryptionHandlerDispatchHardening(unittest.TestCase):
         # 0x03 (and any control byte < 0x2B that is not 0x02) means "newer client".
         blob = self.magic_header + b"\x03" + base64.b64encode(b"whatever-payload")
 
-        with self.assertRaisesRegex(ValueError, "newer git-secret-protector client"):
+        with self.assertRaisesRegex(
+            UnsupportedFormatError, "newer git-secret-protector client"
+        ):
             self.handler.decrypt_data(blob)
 
     def test_stripped_v2_version_byte_does_not_silently_cbc(self):
@@ -217,7 +220,9 @@ class TestAesEncryptionHandlerDispatchHardening(unittest.TestCase):
         v2 = self.handler.encrypt_data(b"secret")
         tampered = self.magic_header + b"\x04" + v2[len(self.magic_header) + 1 :]
 
-        with self.assertRaisesRegex(ValueError, "newer git-secret-protector client"):
+        with self.assertRaisesRegex(
+            UnsupportedFormatError, "newer git-secret-protector client"
+        ):
             self.handler.decrypt_data(tampered)
 
     def test_plaintext_beginning_with_magic_header_is_skipped(self):

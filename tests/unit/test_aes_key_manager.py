@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from git_secret_protector.core.settings import StorageType
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.error.aes_key_error import AesKeyError
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 
 
 class TestAesKeyManager(unittest.TestCase):
@@ -291,7 +292,9 @@ class TestAesKeyManagerScheme(unittest.TestCase):
         blob = self._make_blob(version=4)  # newer than this client supports
         self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
 
-        with self.assertRaisesRegex(AesKeyError, "newer than this client supports"):
+        with self.assertRaisesRegex(
+            UnsupportedFormatError, "newer than this client supports"
+        ):
             self.aes_key_manager.get_scheme(filter_name)
 
     def test_get_scheme_cache_miss_falls_back_to_backend(self):
