@@ -75,7 +75,7 @@ class EncryptionManager:
         sys.exit(1)
 
     def setup_aes_key(self, filter_name: str, scheme: Optional[str] = None):
-        # Precedence: explicit --scheme flag > config encryption_scheme > built-in v2.
+        # Precedence: explicit --scheme flag > config encryption_scheme > built-in v1.
         if scheme is None:
             scheme = get_settings().encryption_scheme
         filter_name = self._require_filter(filter_name)
@@ -837,7 +837,7 @@ class EncryptionManager:
         cfg["DEFAULT"] = {
             "module_name": module_name,
             "storage_type": backend,
-            "encryption_scheme": "v2",  # v2 = authenticated; v1 = legacy AES-CBC
+            "encryption_scheme": "v1",  # v1 = legacy AES-CBC (widest compat); v2 = authenticated
             "log_level": "WARN",
             "log_max_size": "1048576",
         }

@@ -237,26 +237,33 @@ Logs are stored in the `.git_secret_protector/logs/` directory by default, and y
 
 `git-secret-protector` supports two encryption schemes:
 
-- **v2** (default) - authenticated AES-256-CTR + HMAC-SHA256. This is the secure default for all new filters.
-- **v1** (legacy) - unauthenticated AES-CBC, kept only for backward compatibility with clients older than 1.4.0 that cannot read v2-encrypted files.
+- **v1** (default) - unauthenticated AES-CBC. Readable by every client version, so new filters do not break teammates on installs older than 1.4.0.
+- **v2** - authenticated AES-256-CTR + HMAC-SHA256. Prefer this once all clients are on 1.4.0 or later.
 
-Decryption automatically handles both formats. Any file encrypted with v1 is still readable after you set up a v2 key, so the migration is safe to perform at any time.
+The scheme a new key gets is resolved by precedence: `--scheme` flag > `encryption_scheme` in `config.ini` (`v1`|`v2`) > built-in default (**v1**). Decryption automatically handles both formats, so a v2 key still reads existing v1 files - migration is safe to perform at any time.
 
 #### Setting the scheme when creating a key
 
-By default, `setup-aes-key` creates a v2 key:
+By default, `setup-aes-key` creates a **v1** key (widest cross-version compatibility):
 
 ```sh
 git-secret-protector setup-aes-key <filter_name>
 ```
 
-To create a v1 key for a filter that still has pre-1.4.0 clients:
+To create an authenticated **v2** key (recommended once every client is on 1.4.0+):
 
 ```sh
-git-secret-protector setup-aes-key <filter_name> --scheme v1
+git-secret-protector setup-aes-key <filter_name> --scheme v2
 ```
 
-> **SECURITY NOTE:** v1 is unauthenticated. An attacker with write access to the ciphertext can tamper with it without detection. Use `--scheme v1` only when you have no other option (old clients that cannot be upgraded). Migrate away from v1 as soon as all clients are on 1.4.0 or later (see `upgrade-scheme` below).
+Or set the default for the whole repo in `.git_secret_protector/config.ini`:
+
+```ini
+[DEFAULT]
+encryption_scheme = v2
+```
+
+> **SECURITY NOTE:** the default v1 scheme is unauthenticated - an attacker with write access to the ciphertext can tamper with it without detection. v1 maximizes cross-version compatibility at the cost of tamper detection; switch to v2 (via `--scheme v2` or `encryption_scheme = v2`) as soon as every client is on 1.4.0 or later, and migrate existing filters with `upgrade-scheme` (below).
 
 #### Migrating a filter from v1 to v2
 

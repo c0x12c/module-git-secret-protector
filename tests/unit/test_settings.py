@@ -112,11 +112,11 @@ def _repo_with_config(tmp_path, config_body):
     return base
 
 
-def test_encryption_scheme_defaults_to_v2_when_absent(tmp_path, monkeypatch):
+def test_encryption_scheme_defaults_to_v1_when_absent(tmp_path, monkeypatch):
     base = _repo_with_config(tmp_path, "[DEFAULT]\nmodule_name = demo\n")
     monkeypatch.setenv("SECRET_PROTECTOR_BASE_DIR", str(base))
 
-    assert Settings().encryption_scheme == "v2"
+    assert Settings().encryption_scheme == "v1"
 
 
 def test_encryption_scheme_read_from_config(tmp_path, monkeypatch):
