@@ -194,6 +194,15 @@ class TestAesEncryptionHandlerDispatchHardening(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.handler.decrypt_data(stripped)
 
+    def test_non_base64_first_byte_fails_closed(self):
+        # 0xFF and 0x3A (':') are >= 0x2B but not base64-alphabet; they must not be
+        # routed to the legacy CBC path (the >= 0x2B threshold used to let them in).
+        for bad in (b"\xff", b"\x3a", b"\x2c"):
+            with self.subTest(byte=bad):
+                blob = self.magic_header + bad + base64.b64encode(b"payload")
+                with self.assertRaisesRegex(ValueError, "unrecognized wire format"):
+                    self.handler.decrypt_data(blob)
+
     def test_truncated_v2_payload_fails_with_clear_message(self):
         short = self.magic_header + self.handler.V2 + base64.b64encode(b"tooshort")
 

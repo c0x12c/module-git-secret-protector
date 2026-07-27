@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 class AesEncryptionHandler:
     V2 = b"\x02"
+    # The first byte of a base64-encoded payload is always in this alphabet, so a
+    # legacy v1 blob (which carries no version byte) always starts with one of these.
+    # Any byte outside it is a version marker or corruption - never a real v1 blob.
+    _B64_FIRST_BYTES = frozenset(
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    )
 
     def __init__(
         self, aes_key: bytes, iv: bytes, magic_header: bytes, scheme: str = "v2"
@@ -96,19 +102,18 @@ class AesEncryptionHandler:
         if version_byte == self.V2:
             return self._decrypt_v2(encrypted_data[1:])
 
-        # Legacy v1 carries no version byte: its payload is raw base64, whose first
-        # byte is always a base64-alphabet char (>= 0x2B '+'). An empty payload is
-        # treated as v1 too so a corrupt blob keeps its old "Invalid AES key" error.
-        # Any other control byte (< 0x2B) that is not a known version marker means the
-        # blob was written by a newer client - fail closed instead of silently feeding
-        # it to the unauthenticated CBC path. Ceiling: this disambiguation holds until
-        # a version marker reaches 0x2B.
-        if not version_byte or version_byte[0] >= 0x2B:
+        # Legacy v1 carries no version byte: its payload is raw base64, so its first
+        # byte is always in the base64 alphabet. An empty payload is treated as v1 too
+        # so a corrupt blob keeps its old "Invalid AES key" error. Anything else - a
+        # future version marker or a corrupt byte - fails closed instead of being fed
+        # to the unauthenticated CBC path. Ceiling: holds while version markers stay
+        # outside the base64 alphabet (control bytes today).
+        if not version_byte or version_byte[0] in self._B64_FIRST_BYTES:
             return self._decrypt_v1(encrypted_data)
 
         raise ValueError(
-            "Cannot decrypt: blob appears to be encrypted by a newer "
-            "git-secret-protector client; upgrade git-secret-protector."
+            "Cannot decrypt: unrecognized wire format (possibly encrypted by a newer "
+            "git-secret-protector client); upgrade git-secret-protector."
         )
 
     def _decrypt_v2(self, b64_payload: bytes) -> bytes:
