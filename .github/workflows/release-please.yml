@@ -21,7 +21,7 @@ jobs:
       # (on: push tags v*) would never fire. The App token makes the tag push a
       # real event that triggers publishing.
       - name: Create GitHub App Token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}
