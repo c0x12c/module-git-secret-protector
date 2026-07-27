@@ -286,6 +286,14 @@ class TestAesKeyManagerScheme(unittest.TestCase):
 
         self.assertEqual(result, "v2")
 
+    def test_get_scheme_newer_version_fails_closed(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=4)  # newer than this client supports
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        with self.assertRaisesRegex(AesKeyError, "newer than this client supports"):
+            self.aes_key_manager.get_scheme(filter_name)
+
     def test_get_scheme_cache_miss_falls_back_to_backend(self):
         filter_name = secrets.token_hex(8)
         blob = self._make_blob(version=1)

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 **Note**: Ensure to keep this changelog updated with every new release or change made to the project.
 
+## [1.6.0] - 2026-07-27
+
+### Security
+- Fail-closed encryption version dispatch: unknown/newer wire formats now raise instead of silently decrypting as legacy unauthenticated AES-CBC; truncated v2 payloads (< 48 bytes) are rejected before slicing; `get_scheme` refuses key-blob versions newer than the client supports. v1/v2 formats stay byte-frozen and fully backward compatible (proven by golden-file fixtures). (#98)
+
 ## [1.5.1] - 2026-07-23
 
 - fix: cache-only git filters + fast backend timeouts to prevent required-filter hang (#97)
@@ -16,12 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [1.4.0] - 2026-06-13
 
-- feat(cli): CLI UX/security hardening — namespace surfacing, rotate-key confirm, doctor, errors to stderr (#91)
+- feat(cli): CLI UX/security hardening - namespace surfacing, rotate-key confirm, doctor, errors to stderr (#91)
 
 ## [1.3.0] - 2026-06-13
 
 ### Added
-- Authenticated deterministic encryption (v2): HKDF-SHA256 derives domain-separated enc/mac/iv subkeys; content-derived IV keeps identical plaintext git-stable; AES-256-CTR with encrypt-then-HMAC-SHA256. Backward compatible — legacy v1 (AES-CBC) blobs still decrypt. (#83)
+- Authenticated deterministic encryption (v2): HKDF-SHA256 derives domain-separated enc/mac/iv subkeys; content-derived IV keeps identical plaintext git-stable; AES-256-CTR with encrypt-then-HMAC-SHA256. Backward compatible - legacy v1 (AES-CBC) blobs still decrypt. (#83)
 
 ### Changed
 - Harden repository base-dir detection: marker-first precedence with a `SECRET_PROTECTOR_BASE_DIR` env override, preventing silent misconfiguration in nested repos/submodules. (#86)
