@@ -5,9 +5,11 @@ on:
     branches:
       - master
 
+# All release-please writes (release PR, tag, GitHub Release) go through the App
+# token below, so the default GITHUB_TOKEN needs no write scope. There is no
+# checkout step either. Keep it minimal.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
