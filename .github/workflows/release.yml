@@ -1,0 +1,135 @@
+# Tags + GitHub Release + PyPI publish driven by CHANGELOG.md.
+#
+# Editing CHANGELOG.md on master (renaming `[Unreleased]` to a versioned
+# heading) cuts a tag and a Release whose body is the extracted section; the
+# tag then triggers publish-to-pypi.yml. While the `[Unreleased]` heading is
+# present, this workflow is a no-op.
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - 'CHANGELOG.md'
+
+permissions:
+  contents: write # to push the version bump and publish a GitHub release
+
+jobs:
+  verify-changelog:
+    name: Verify Changelog
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'c0x12c'
+    outputs:
+      is_releasable: ${{ steps.check_unreleased.outputs.is_releasable }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for [Unreleased] section
+        id: check_unreleased
+        run: |
+          # The link-reference at the bottom (`[Unreleased]: https://...`)
+          # is allowed; only an `## [Unreleased]` heading gates the release.
+          if grep -qE '^##[[:space:]]+\[Unreleased\]' CHANGELOG.md; then
+            echo "is_releasable=false" >> "$GITHUB_OUTPUT"
+            echo "CHANGELOG.md still has an ## [Unreleased] heading - skipping release."
+          else
+            echo "is_releasable=true" >> "$GITHUB_OUTPUT"
+            echo "CHANGELOG.md is ready for release."
+          fi
+
+  release:
+    name: Release
+    needs: verify-changelog
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'c0x12c' && needs.verify-changelog.outputs.is_releasable == 'true'
+    steps:
+      # App token (not GITHUB_TOKEN): needed to push the version-bump commit to
+      # protected master AND so the tag created below triggers publish-to-pypi.yml
+      # (a GITHUB_TOKEN-created tag would not fire downstream workflows).
+      - name: Create GitHub App Token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      # Extract the first (latest) versioned heading: `## [X.Y.Z]` or `## [vX.Y.Z]`.
+      - name: Extract version from changelog
+        id: extract_version
+        run: |
+          VERSION=$(grep -oE '^## \[v?[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | head -1 | sed 's/^## \[v\{0,1\}//;s/\]$//')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract a SemVer heading (## [X.Y.Z]) from CHANGELOG.md."
+            exit 1
+          fi
+          echo "Extracted version: $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # Keep pyproject.toml in lockstep with the changelog version so the wheel
+      # publish-to-pypi.yml builds from the tag carries the right version. The tag
+      # is created at whatever HEAD ends up being (bumped commit, or the changelog
+      # commit if pyproject already matched).
+      - name: Sync pyproject.toml version
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          current=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/^version = "(.*)"/\1/')
+          if [ "$current" != "$VERSION" ]; then
+            sed -i -E "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "chore: bump version to $VERSION"
+            git push origin HEAD:master
+          fi
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # Inline section extractor: print lines between `## [VERSION]` (exclusive
+      # of the heading itself) and the next `## [` heading OR the first
+      # `[label]: url` link-reference line, whichever comes first. Trailing
+      # blank lines are trimmed. The version is regex-escaped so metacharacters
+      # like `.` cannot accidentally match a wrong heading.
+      - name: Extract changelog section
+        id: changelog
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          VER_RE=$(printf '%s' "$VERSION" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')
+          BODY=$(awk -v pat="^## \\\\[v?${VER_RE}\\\\]" '
+            {
+              if (found && (/^## \[/ || /^\[[^]]+\]:[[:space:]]/)) exit
+              if (!found && $0 ~ pat) { found=1; next }
+              if (found) print
+            }
+          ' CHANGELOG.md | sed -e '/./,$!d' | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n; while (end>0 && lines[end-1]=="") end--; for (i=0;i<end;i++) print lines[i]}')
+          if [ -z "$BODY" ]; then
+            echo "::error::Empty changelog body for $VERSION"
+            exit 1
+          fi
+          {
+            echo 'body<<EOF_CHANGELOG'
+            printf '%s\n' "$BODY"
+            echo 'EOF_CHANGELOG'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          target_commitish: ${{ env.RELEASE_SHA }}
+          name: "git-secret-protector v${{ env.VERSION }}"
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: false
+          # Idempotent: re-running for an existing tag is a no-op rather than a failure.
+          fail_on_unmatched_files: false
+          token: ${{ steps.app-token.outputs.token }}
