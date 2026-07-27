@@ -102,3 +102,33 @@ def test_find_base_dir_raises_when_not_in_repo(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="git repository"):
         Settings._find_base_dir()
+
+
+def _repo_with_config(tmp_path, config_body):
+    base = tmp_path / "repo"
+    module = base / ".git_secret_protector"
+    module.mkdir(parents=True)
+    (module / "config.ini").write_text(config_body)
+    return base
+
+
+def test_encryption_scheme_defaults_to_v2_when_absent(tmp_path, monkeypatch):
+    base = _repo_with_config(tmp_path, "[DEFAULT]\nmodule_name = demo\n")
+    monkeypatch.setenv("SECRET_PROTECTOR_BASE_DIR", str(base))
+
+    assert Settings().encryption_scheme == "v2"
+
+
+def test_encryption_scheme_read_from_config(tmp_path, monkeypatch):
+    base = _repo_with_config(tmp_path, "[DEFAULT]\nencryption_scheme = v1\n")
+    monkeypatch.setenv("SECRET_PROTECTOR_BASE_DIR", str(base))
+
+    assert Settings().encryption_scheme == "v1"
+
+
+def test_invalid_encryption_scheme_raises(tmp_path, monkeypatch):
+    base = _repo_with_config(tmp_path, "[DEFAULT]\nencryption_scheme = v9\n")
+    monkeypatch.setenv("SECRET_PROTECTOR_BASE_DIR", str(base))
+
+    with pytest.raises(ValueError, match="Invalid encryption_scheme"):
+        Settings()

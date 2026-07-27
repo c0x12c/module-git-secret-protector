@@ -29,6 +29,7 @@ class Settings:
     log_backup_count: int = 3
     magic_header: str = "ENCRYPTED"
     storage_type: StorageType = StorageType.AWS_SSM
+    encryption_scheme: str = "v2"
     config: configparser.ConfigParser = field(init=False)
 
     def __post_init__(self):
@@ -108,6 +109,16 @@ class Settings:
                 self.storage_type = StorageType(storage_type_str)
             else:
                 raise ValueError(f"Invalid storage_type value: {storage_type_str}")
+
+            encryption_scheme_str = self.config.get(
+                "DEFAULT", "encryption_scheme", fallback=self.encryption_scheme
+            )
+            if encryption_scheme_str in ("v1", "v2"):
+                self.encryption_scheme = encryption_scheme_str
+            else:
+                raise ValueError(
+                    f"Invalid encryption_scheme value: {encryption_scheme_str} (expected v1 or v2)"
+                )
 
     @classmethod
     def get_instance(cls):
