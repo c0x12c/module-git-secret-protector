@@ -8,7 +8,13 @@ from Crypto.Protocol.KDF import HKDF
 from Crypto.Util import Counter
 from Crypto.Util.Padding import pad, unpad
 
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
+
 logger = logging.getLogger(__name__)
+
+# Wire/key schemes this client can produce and read. Surfaced by `doctor` so
+# version skew across a team is diagnosable before it breaks a checkout.
+SUPPORTED_SCHEMES = ("v1", "v2")
 
 
 class AesEncryptionHandler:
@@ -111,7 +117,7 @@ class AesEncryptionHandler:
         if not version_byte or version_byte[0] in self._B64_FIRST_BYTES:
             return self._decrypt_v1(encrypted_data)
 
-        raise ValueError(
+        raise UnsupportedFormatError(
             "Cannot decrypt: unrecognized wire format (possibly encrypted by a newer "
             "git-secret-protector client); upgrade git-secret-protector."
         )

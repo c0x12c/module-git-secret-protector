@@ -11,8 +11,12 @@ import injector
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.core.output import Output
 from git_secret_protector.core.settings import StorageType, get_settings
-from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_encryption_handler import (
+    AesEncryptionHandler,
+    SUPPORTED_SCHEMES,
+)
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 from git_secret_protector.services.key_rotator import KeyRotator
 from git_secret_protector.utils.project_version import get_project_version_from_metadata
 
@@ -318,6 +322,13 @@ class EncryptionManager:
             logging.info(
                 f"Successfully decrypted data from stdin for file: {file_name}"
             )
+        except UnsupportedFormatError as e:
+            # Newer/unknown wire or key format: fail closed. Do NOT pass the ciphertext
+            # through as if it were content (that would silently land encrypted bytes in
+            # the working tree) - abort the checkout so the skew is visible.
+            logging.error(f"Decrypt data command failed: {e}", exc_info=True)
+            print(f"git-secret-protector: {e}", file=sys.stderr)
+            sys.exit(1)
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
             # Surface on stderr (git shows it) so a cache-miss key error is diagnosable;
@@ -544,6 +555,19 @@ class EncryptionManager:
         )
         checks.append(
             {"check": "repository_context", "status": "ok", "detail": repo_lines}
+        )
+
+        # Surface which schemes this client can read/produce so version skew across a
+        # team is diagnosable here, before a mismatched blob breaks someone's checkout.
+        checks.append(
+            {
+                "check": "supported_schemes",
+                "status": "ok",
+                "detail": (
+                    f"this client supports schemes: {', '.join(SUPPORTED_SCHEMES)} "
+                    f"(new-key default: {settings.encryption_scheme})"
+                ),
+            }
         )
 
         if os.path.exists(settings.config_file):

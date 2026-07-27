@@ -17,6 +17,7 @@ from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.main import show_project_version
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from tests.utils.random_utils import generate_random_string
 
@@ -512,6 +513,27 @@ class TestEncryptionManagerService(unittest.TestCase):
 
         self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
 
+    def test_decrypt_stdin_exits_and_writes_nothing_on_unsupported_format(self):
+        # An unknown/newer wire or key format must fail closed: exit non-zero and NOT
+        # pass the ciphertext through as if it were the file's content.
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        encrypted_data = b"\x03unknown-format"
+        stdout_buffer = io.BytesIO()
+        stdin = SimpleNamespace(buffer=io.BytesIO(encrypted_data))
+        stdout = SimpleNamespace(buffer=stdout_buffer)
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__get_encryption_handler",
+            side_effect=UnsupportedFormatError("encrypted by a newer client"),
+        ):
+            with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.decrypt_stdin("secrets.env")
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(stdout_buffer.getvalue(), b"")  # no ciphertext-through
+
     def test_encrypt_stdin_cache_miss_uses_cache_only_lookup(self):
         self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
         stdout_buffer = io.BytesIO()
@@ -796,6 +818,10 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["exit_code"], 1)
         self.assertTrue(any(c["status"] == "fail" for c in payload["checks"]))
+        supported = next(
+            c for c in payload["checks"] if c["check"] == "supported_schemes"
+        )
+        self.assertIn("v1, v2", supported["detail"])
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_doctor_json_per_filter_checks_distinguishable_with_two_filters(

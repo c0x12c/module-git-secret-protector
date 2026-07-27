@@ -5,6 +5,7 @@ import os
 
 from git_secret_protector.core.settings import get_settings
 from git_secret_protector.error.aes_key_error import AesKeyError
+from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 from git_secret_protector.storage.storage_manager_factory import StorageManagerFactory
 
 logger = logging.getLogger(__name__)
@@ -196,10 +197,12 @@ class AesKeyManager:
                 return "v1"
             if version == 2:
                 return "v2"
-            raise AesKeyError(
+            raise UnsupportedFormatError(
                 f"Key blob for filter '{filter_name}' has version {version}, newer "
                 f"than this client supports; upgrade git-secret-protector."
             )
+        except UnsupportedFormatError:
+            raise
         except AesKeyError:
             raise
         except Exception as e:
