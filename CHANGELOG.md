@@ -16,8 +16,7 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
-## [Unreleased]
-
+## [1.8.0] - 2026-07-28
 - The git decrypt filter now **fails closed** on a blob or key whose format is newer than this client supports (typed `UnsupportedFormatError`): it exits non-zero instead of silently writing the ciphertext into the working tree. Transient cache-miss errors still degrade (pass through) as before.
 - `doctor` now reports the schemes this client supports (`this client supports schemes: v1, v2 (new-key default: ...)`), so team version skew is diagnosable before it breaks a checkout.
 
