@@ -926,7 +926,7 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
         self.key_manager.is_cached.return_value = True
         self.key_manager.resolve_parameter_name.return_value = "/path"
-        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.get_scheme_info.return_value = ("v1", True)
         mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
         out = io.StringIO()
         self.manager.output = Output(json=True)
@@ -946,6 +946,33 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertIn("v1", sc["detail"])
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_scheme_check_unversioned_blob_is_warn(self, mock_run):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        # version_present=False: a legacy blob with no version field, silently v1.
+        self.key_manager.get_scheme_info.return_value = ("v1", False)
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        scheme_checks = [c for c in payload["checks"] if c.get("check") == "scheme"]
+        self.assertEqual(len(scheme_checks), 1)
+        sc = scheme_checks[0]
+        self.assertEqual(sc["status"], "warn")
+        self.assertEqual(sc["filter"], "secret")
+        self.assertIn("no version field", sc["detail"])
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_doctor_json_scheme_check_v2_is_ok(self, mock_run):
         from git_secret_protector.core.output import Output
 
@@ -953,7 +980,7 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
         self.key_manager.is_cached.return_value = True
         self.key_manager.resolve_parameter_name.return_value = "/path"
-        self.key_manager.get_scheme.return_value = "v2"
+        self.key_manager.get_scheme_info.return_value = ("v2", True)
         mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
         out = io.StringIO()
         self.manager.output = Output(json=True)
@@ -969,12 +996,38 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertEqual(scheme_checks[0]["status"], "ok")
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_scheme_check_undeterminable_is_warn(self, mock_run):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        self.key_manager.get_scheme_info.side_effect = UnsupportedFormatError("newer")
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                rc = self.manager.doctor()
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        scheme_checks = [c for c in payload["checks"] if c.get("check") == "scheme"]
+        self.assertEqual(len(scheme_checks), 1)
+        sc = scheme_checks[0]
+        self.assertEqual(sc["status"], "warn")
+        self.assertEqual(sc["filter"], "secret")
+        self.assertIn("could not be determined", sc["detail"])
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_doctor_human_v1_scheme_prints_warn_and_exit_still_zero(self, mock_run):
         self.git_attributes_parser.get_filter_names.return_value = ["secret"]
         self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
         self.key_manager.is_cached.return_value = True
         self.key_manager.resolve_parameter_name.return_value = "/path"
-        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.get_scheme_info.return_value = ("v1", True)
         mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
         out = io.StringIO()
         with patch("os.path.exists", return_value=True), patch.object(

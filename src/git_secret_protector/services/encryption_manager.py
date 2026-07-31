@@ -665,11 +665,21 @@ class EncryptionManager:
 
         for filter_name in filter_names:
             try:
-                scheme = self.key_manager.get_scheme(filter_name)
+                scheme, version_present = self.key_manager.get_scheme_info(filter_name)
                 if scheme not in ("v1", "v2"):
                     scheme = "v2"
-            except Exception:
-                scheme = "v2"
+            except Exception as e:
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "warn",
+                        "detail": (
+                            f"filter '{filter_name}' scheme could not be determined: {e}"
+                        ),
+                        "filter": filter_name,
+                    }
+                )
+                continue
             if scheme == "v2":
                 checks.append(
                     {
@@ -679,7 +689,7 @@ class EncryptionManager:
                         "filter": filter_name,
                     }
                 )
-            else:
+            elif version_present:
                 checks.append(
                     {
                         "check": "scheme",
@@ -687,6 +697,19 @@ class EncryptionManager:
                         "detail": (
                             f"filter '{filter_name}' uses legacy unauthenticated scheme v1 "
                             f"(run upgrade-scheme once all clients are >=1.4.0)"
+                        ),
+                        "filter": filter_name,
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "warn",
+                        "detail": (
+                            f"filter '{filter_name}' key blob has no version field; "
+                            f"treating as legacy unauthenticated v1. Run "
+                            f"'upgrade-scheme {filter_name}' to adopt authenticated v2."
                         ),
                         "filter": filter_name,
                     }

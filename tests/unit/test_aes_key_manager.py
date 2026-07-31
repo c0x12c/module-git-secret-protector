@@ -278,14 +278,32 @@ class TestAesKeyManagerScheme(unittest.TestCase):
 
         self.assertEqual(result, "v2")
 
-    def test_get_scheme_version_absent_defaults_v2(self):
+    def test_get_scheme_version_absent_defaults_v1(self):
         filter_name = secrets.token_hex(8)
         blob = self._make_blob(version=None)  # no "version" key
         self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
 
         result = self.aes_key_manager.get_scheme(filter_name)
 
-        self.assertEqual(result, "v2")
+        self.assertEqual(result, "v1")
+
+    def test_get_scheme_info_reports_version_present(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=2)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        result = self.aes_key_manager.get_scheme_info(filter_name)
+
+        self.assertEqual(result, ("v2", True))
+
+    def test_get_scheme_info_reports_version_absent(self):
+        filter_name = secrets.token_hex(8)
+        blob = self._make_blob(version=None)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json.dumps(blob))
+
+        result = self.aes_key_manager.get_scheme_info(filter_name)
+
+        self.assertEqual(result, ("v1", False))
 
     def test_get_scheme_newer_version_fails_closed(self):
         filter_name = secrets.token_hex(8)

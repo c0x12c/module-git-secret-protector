@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+from typing import Tuple
 
 from git_secret_protector.core.settings import get_settings
 from git_secret_protector.error.aes_key_error import AesKeyError
@@ -175,15 +176,14 @@ class AesKeyManager:
         logger.debug("No local cache found for filter: %s", filter_name)
         return None
 
-    def get_scheme(self, filter_name: str) -> str:
-        """Return "v1" or "v2" for the scheme stored in the key blob.
+    def get_scheme_info(self, filter_name: str) -> Tuple[str, bool]:
+        """Return the stored scheme and whether the key blob explicitly carries a version.
 
         Tries the local cache first; falls back to the storage backend.
-        A *missing* version field defaults to "v2" (legacy-ambiguous blobs predate
-        versioning; do not regress them). A *newer* numeric version (>= 3) fails
-        closed instead of silently masquerading as v2, so an old client refuses a
-        blob it cannot understand rather than encrypting under the wrong scheme.
-        A completely missing key blob still raises AesKeyError (same as retrieve_key_and_iv).
+        A missing version field defaults to "v1": legacy pre-versioning blobs were
+        written in the v1/CBC era, and every v2 blob carries an explicit version.
+        A newer numeric version (>= 3) still fails closed. A completely missing key
+        blob still raises AesKeyError (same as retrieve_key_and_iv).
         """
         try:
             data = self.load_key_iv_from_cache(filter_name=filter_name)
@@ -192,11 +192,12 @@ class AesKeyManager:
                 data = json.loads(
                     self._get_storage_manager().retrieve(name=parameter_name)
                 )
-            version = data.get("version", 2)
+            version_present = "version" in data
+            version = data.get("version", 1)
             if version == 1:
-                return "v1"
+                return "v1", version_present
             if version == 2:
-                return "v2"
+                return "v2", version_present
             raise UnsupportedFormatError(
                 f"Key blob for filter '{filter_name}' has version {version}, newer "
                 f"than this client supports; upgrade git-secret-protector."
@@ -209,6 +210,10 @@ class AesKeyManager:
             raise AesKeyError(
                 f"Failed to get scheme for filter '{filter_name}': {str(e)}"
             )
+
+    def get_scheme(self, filter_name: str) -> str:
+        """Return "v1" or "v2" for the scheme stored in the key blob."""
+        return self.get_scheme_info(filter_name)[0]
 
     def set_scheme(self, filter_name: str, scheme: str):
         """Rewrite the version field in the stored blob (backend + cache) without touching aes_key/iv."""
