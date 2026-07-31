@@ -668,9 +668,18 @@ class EncryptionManager:
                 scheme, version_present = self.key_manager.get_scheme_info(filter_name)
                 if scheme not in ("v1", "v2"):
                     scheme = "v2"
-            except Exception:
-                scheme = "v2"
-                version_present = True
+            except Exception as e:
+                checks.append(
+                    {
+                        "check": "scheme",
+                        "status": "warn",
+                        "detail": (
+                            f"filter '{filter_name}' scheme could not be determined: {e}"
+                        ),
+                        "filter": filter_name,
+                    }
+                )
+                continue
             if scheme == "v2":
                 checks.append(
                     {
