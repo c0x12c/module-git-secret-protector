@@ -16,6 +16,10 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [1.9.0] - 2026-07-31
+- **Fix (encrypt path, affects every consumer):** a key blob with **no `version` field** is now treated as legacy **v1**, not v2. Such blobs predate the versioning scheme, so their committed ciphertext is v1; defaulting them to v2 made the clean filter emit v2 ciphertext, so every decrypted file showed as permanently modified (and `git checkout` could not restore it). Every blob writer (`setup-aes-key`, `set-scheme`, `rotate-key`) emits an explicit `version`, so a missing field unambiguously means v1 - this cannot misclassify a v2 blob. Aligns with the v1 fleet default from 1.7.1. Decrypt is unchanged (version-byte-authoritative).
+- `doctor` now flags a key blob that has no `version` field (silently treated as legacy unauthenticated v1) distinctly from an explicit v1, and points to `upgrade-scheme` to adopt authenticated v2.
+
 ## [1.8.0] - 2026-07-28
 - The git decrypt filter now **fails closed** on a blob or key whose format is newer than this client supports (typed `UnsupportedFormatError`): it exits non-zero instead of silently writing the ciphertext into the working tree. Transient cache-miss errors still degrade (pass through) as before.
 - `doctor` now reports the schemes this client supports (`this client supports schemes: v1, v2 (new-key default: ...)`), so team version skew is diagnosable before it breaks a checkout.
