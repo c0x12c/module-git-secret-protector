@@ -22,8 +22,14 @@ jobs:
         id: skip
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          if printf '%s' "$PR_BODY" | grep -Fq '[skip changelog]'; then
+          # Dependabot cannot inject [skip changelog] into its PR body, and a
+          # dependency bump has no user-facing behavior to record - exempt it.
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR - changelog entry not required."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$PR_BODY" | grep -Fq '[skip changelog]'; then
             echo "PR body contains [skip changelog] - skipping check."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
