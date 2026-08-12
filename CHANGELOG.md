@@ -16,6 +16,9 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [1.9.1] - 2026-08-12
+- **Fix:** a reader closing our stdout early (git tearing down a clean/smudge filter, `git-secret-protector status | head`, quitting a pager mid-`git diff`) no longer prints `git-secret-protector: [Errno 32] Broken pipe` followed by `Exception ignored in: <_io.TextIOWrapper name='<stdout>'>`. Two separate causes: the generic handlers in the encrypt/decrypt stdin path reported a pipe close as an application error (and `decrypt` then wrote the ciphertext to the already-dead pipe, raising again), and CPython's interpreter-shutdown flush of `sys.stdout` re-raised outside any `try` block. The CLI now re-raises `BrokenPipeError` past the filter handlers, flushes stdout inside a `finally` so `sys.exit()`-based subcommands are covered, and redirects stdout/stderr to `/dev/null` before exiting 141 so the shutdown flush cannot raise.
+
 ## [1.9.0] - 2026-07-31
 - **Fix (encrypt path, affects every consumer):** a key blob with **no `version` field** is now treated as legacy **v1**, not v2. Such blobs predate the versioning scheme, so their committed ciphertext is v1; defaulting them to v2 made the clean filter emit v2 ciphertext, so every decrypted file showed as permanently modified (and `git checkout` could not restore it). Every blob writer (`setup-aes-key`, `set-scheme`, `rotate-key`) emits an explicit `version`, so a missing field unambiguously means v1 - this cannot misclassify a v2 blob. Aligns with the v1 fleet default from 1.7.1. Decrypt is unchanged (version-byte-authoritative).
 - `doctor` now flags a key blob that has no `version` field (silently treated as legacy unauthenticated v1) distinctly from an explicit v1, and points to `upgrade-scheme` to adopt authenticated v2.

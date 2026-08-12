@@ -23,6 +23,21 @@ def _safe_version():
         return "unknown"
 
 
+def _silence_stdio():
+    """Point stdout/stderr at /dev/null so the interpreter's shutdown flush cannot
+    raise again - a BrokenPipeError caught here still has bytes in the buffer, and
+    that final flush is outside any try block."""
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull_fd, sys.stdout.fileno())
+            os.dup2(devnull_fd, sys.stderr.fileno())
+        finally:
+            os.close(devnull_fd)
+    except Exception:
+        pass
+
+
 def init_module_folder():
     settings = get_settings()
     module_path = Path(settings.module_dir)
@@ -136,7 +151,7 @@ def init_command(args):
     )
 
 
-def main():
+def _run():
     # Shared parent inherited by both the top-level parser and every subparser.
     # SUPPRESS means an absent flag sets NO attribute, so a subparser parse
     # cannot clobber a value already captured by the top-level parse.
@@ -382,6 +397,20 @@ def main():
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def main():
+    try:
+        try:
+            _run()
+        finally:
+            # `finally`, not a trailing statement: most subcommands leave _run via
+            # sys.exit(), which would skip the flush and push the failure out to the
+            # interpreter's shutdown flush - the one place no handler can reach it.
+            sys.stdout.flush()
+    except BrokenPipeError:
+        _silence_stdio()
+        sys.exit(141)
 
 
 if __name__ == "__main__":

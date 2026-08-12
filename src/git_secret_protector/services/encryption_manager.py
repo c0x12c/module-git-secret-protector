@@ -288,6 +288,9 @@ class EncryptionManager:
             logging.info(
                 f"Successfully encrypted data from stdin for file: {file_name}"
             )
+        except BrokenPipeError:
+            # The reader closing the pipe is not an application error; main() handles it.
+            raise
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
             # stderr is safe for git filters (stdout carries the binary payload) and,
@@ -322,6 +325,9 @@ class EncryptionManager:
             logging.info(
                 f"Successfully decrypted data from stdin for file: {file_name}"
             )
+        except BrokenPipeError:
+            # The reader closing the pipe is not an application error; main() handles it.
+            raise
         except UnsupportedFormatError as e:
             # Newer/unknown wire or key format: fail closed. Do NOT pass the ciphertext
             # through as if it were content (that would silently land encrypted bytes in
