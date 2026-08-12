@@ -5,8 +5,6 @@ import secrets
 import subprocess
 import sys
 
-from Crypto.Cipher import AES
-
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 
 
