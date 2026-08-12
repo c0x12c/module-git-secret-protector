@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
-from git_secret_protector.core.output import Output
+from git_secret_protector.core.output import Output, silence_stdio
 from git_secret_protector.core.settings import Settings, get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
@@ -21,21 +21,6 @@ def _safe_version():
         return get_project_version_from_metadata()
     except Exception:
         return "unknown"
-
-
-def _silence_stdio():
-    """Point stdout/stderr at /dev/null so the interpreter's shutdown flush cannot
-    raise again - a BrokenPipeError caught here still has bytes in the buffer, and
-    that final flush is outside any try block."""
-    try:
-        devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        try:
-            os.dup2(devnull_fd, sys.stdout.fileno())
-            os.dup2(devnull_fd, sys.stderr.fileno())
-        finally:
-            os.close(devnull_fd)
-    except Exception:
-        pass
 
 
 def init_module_folder():
@@ -409,7 +394,7 @@ def main():
             # interpreter's shutdown flush - the one place no handler can reach it.
             sys.stdout.flush()
     except BrokenPipeError:
-        _silence_stdio()
+        silence_stdio()
         sys.exit(141)
 
 

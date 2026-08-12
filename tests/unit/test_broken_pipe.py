@@ -43,11 +43,14 @@ def _write_repo_fixture(repo_dir):
     return aes_key, iv
 
 
-def _run_with_closed_stdout(repo_dir, args, stdin_data=b""):
+def _run_with_closed_stdout(repo_dir, args, stdin_data=b"", extra_env=None):
+    env = _repo_env()
+    if extra_env:
+        env.update(extra_env)
     process = subprocess.Popen(
         [sys.executable, "-m", "git_secret_protector.main", *args],
         cwd=repo_dir,
-        env=_repo_env(),
+        env=env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -107,6 +110,19 @@ def test_decrypt_suppresses_broken_pipe_noise(tmp_path):
 
     returncode, stderr = _run_with_closed_stdout(
         tmp_path, ["decrypt", "secret.secret"], stdin_data=encrypted_data
+    )
+
+    _assert_exits_quietly(returncode, stderr)
+
+
+def test_encrypt_files_suppresses_broken_pipe_noise(tmp_path):
+    _write_repo_fixture(tmp_path)
+    (tmp_path / "secret.secret").write_text("plain-secret")
+
+    returncode, stderr = _run_with_closed_stdout(
+        tmp_path,
+        ["encrypt-files", "secret"],
+        extra_env={"PYTHONUNBUFFERED": "1"},
     )
 
     _assert_exits_quietly(returncode, stderr)
