@@ -83,6 +83,23 @@ def test_status_suppresses_broken_pipe_noise(tmp_path):
     _assert_exits_quietly(returncode, stderr)
 
 
+def test_status_with_many_files_suppresses_broken_pipe_noise(tmp_path):
+    _write_repo_fixture(tmp_path)
+    for index in range(500):
+        (
+            tmp_path
+            / f"very-long-secret-file-name-{index:04d}-padding-to-overflow.secret"
+        ).write_text("plain-secret")
+
+    returncode, stderr = _run_with_closed_stdout(
+        tmp_path,
+        ["status"],
+        extra_env={"PYTHONUNBUFFERED": "1"},
+    )
+
+    _assert_exits_quietly(returncode, stderr)
+
+
 def test_doctor_suppresses_broken_pipe_noise(tmp_path):
     # doctor leaves _run via sys.exit(), so it only stays quiet if the flush is in a
     # `finally` - a trailing flush statement would be skipped and surface at shutdown.

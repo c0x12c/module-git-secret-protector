@@ -19,6 +19,16 @@ def silence_stdio():
         pass
 
 
+def safe_print(message, file=None):
+    try:
+        print(message, file=file)
+    except BrokenPipeError:
+        silence_stdio()
+        # SystemExit bypasses generic `except Exception` handlers, so a closed
+        # pipe exits quietly instead of being reported as a command failure.
+        raise SystemExit(141)
+
+
 class Output:
     """Centralized CLI output router. Never used for the encrypt/decrypt
     filter path, whose stdout carries binary file payload."""
@@ -41,13 +51,7 @@ class Output:
         return self._quiet
 
     def _write(self, message, *, file=None):
-        try:
-            print(message, file=file)
-        except BrokenPipeError:
-            silence_stdio()
-            # SystemExit bypasses generic `except Exception` handlers, so a closed
-            # pipe exits quietly instead of being reported as a command failure.
-            raise SystemExit(141)
+        safe_print(message, file=file)
 
     def info(self, message):
         if self._quiet or self._json:
