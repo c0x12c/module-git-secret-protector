@@ -9,7 +9,7 @@ from typing import Optional
 import injector
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
-from git_secret_protector.core.output import Output
+from git_secret_protector.core.output import Output, safe_print
 from git_secret_protector.core.settings import StorageType, get_settings
 from git_secret_protector.crypto.aes_encryption_handler import (
     AesEncryptionHandler,
@@ -288,6 +288,9 @@ class EncryptionManager:
             logging.info(
                 f"Successfully encrypted data from stdin for file: {file_name}"
             )
+        except BrokenPipeError:
+            # The reader closing the pipe is not an application error; main() handles it.
+            raise
         except Exception as e:
             logging.error(f"Encrypt data command failed: {e}", exc_info=True)
             # stderr is safe for git filters (stdout carries the binary payload) and,
@@ -322,6 +325,9 @@ class EncryptionManager:
             logging.info(
                 f"Successfully decrypted data from stdin for file: {file_name}"
             )
+        except BrokenPipeError:
+            # The reader closing the pipe is not an application error; main() handles it.
+            raise
         except UnsupportedFormatError as e:
             # Newer/unknown wire or key format: fail closed. Do NOT pass the ciphertext
             # through as if it were content (that would silently land encrypted bytes in
@@ -526,14 +532,14 @@ class EncryptionManager:
                 return
 
             for entry in data["filters"]:
-                print(f"Filter: {entry['name']}")
-                print(f"  scheme: {entry['scheme']}")
+                safe_print(f"Filter: {entry['name']}")
+                safe_print(f"  scheme: {entry['scheme']}")
                 if entry["files"]:
                     for f in entry["files"]:
                         status = "Encrypted" if f["encrypted"] else "⚠ PLAINTEXT"
-                        print(f"  {f['path']}: {status}")
+                        safe_print(f"  {f['path']}: {status}")
                 else:
-                    print("  No files found for this filter.")
+                    safe_print("  No files found for this filter.")
         except Exception as e:
             if self.output.json:
                 self.output.result(self._envelope_err("status", str(e)))
@@ -782,11 +788,11 @@ class EncryptionManager:
             if c["check"] == "repository_context":
                 # detail is "Repository context\n  line2\n  line3\n  line4"
                 lines = detail.split("\n")
-                print(f"{label} {lines[0]}")
+                safe_print(f"{label} {lines[0]}")
                 for sub in lines[1:]:
-                    print(sub)
+                    safe_print(sub)
             else:
-                print(f"{label} {detail}")
+                safe_print(f"{label} {detail}")
 
     @staticmethod
     def show_project_version(_=None, output=None):
@@ -813,7 +819,7 @@ class EncryptionManager:
 
         if pre_existing and not force:
             if assume_yes:
-                print(
+                safe_print(
                     "config.ini already exists; pass --force to overwrite.",
                     file=sys.stderr,
                 )
@@ -826,14 +832,14 @@ class EncryptionManager:
             except EOFError:
                 answer = ""
             if answer.strip().lower() not in {"y", "yes"}:
-                print("Keeping existing config.", file=sys.stderr)
+                safe_print("Keeping existing config.", file=sys.stderr)
                 return 0
 
         # Resolve backend.
         valid_backends = {m.value for m in StorageType}
         if backend is not None:
             if backend not in valid_backends:
-                print(
+                safe_print(
                     f"Error: invalid backend '{backend}'. Choose from: {', '.join(sorted(valid_backends))}",
                     file=sys.stderr,
                 )
@@ -856,7 +862,7 @@ class EncryptionManager:
                     raw2 = ""
                 backend = raw2.strip() or ""
                 if backend not in valid_backends:
-                    print(
+                    safe_print(
                         f"Error: invalid backend '{backend}'. Choose from: {', '.join(sorted(valid_backends))}",
                         file=sys.stderr,
                     )
@@ -891,8 +897,8 @@ class EncryptionManager:
         with open(settings.config_file, "w") as fh:
             cfg.write(fh)
 
-        print(f"Initialized git-secret-protector config at {settings.config_file}")
-        print(f"  backend: {backend}\n  module_name: {module_name}")
+        safe_print(f"Initialized git-secret-protector config at {settings.config_file}")
+        safe_print(f"  backend: {backend}\n  module_name: {module_name}")
         return 0
 
     @staticmethod

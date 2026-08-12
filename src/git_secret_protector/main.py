@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from git_secret_protector.context.module import GitSecretProtectorModule
-from git_secret_protector.core.output import Output
+from git_secret_protector.core.output import Output, silence_stdio
 from git_secret_protector.core.settings import Settings, get_settings
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from git_secret_protector.utils.configure_logging import configure_logging
@@ -136,7 +136,7 @@ def init_command(args):
     )
 
 
-def main():
+def _run():
     # Shared parent inherited by both the top-level parser and every subparser.
     # SUPPRESS means an absent flag sets NO attribute, so a subparser parse
     # cannot clobber a value already captured by the top-level parse.
@@ -382,6 +382,20 @@ def main():
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def main():
+    try:
+        try:
+            _run()
+        finally:
+            # `finally`, not a trailing statement: most subcommands leave _run via
+            # sys.exit(), which would skip the flush and push the failure out to the
+            # interpreter's shutdown flush - the one place no handler can reach it.
+            sys.stdout.flush()
+    except BrokenPipeError:
+        silence_stdio()
+        sys.exit(141)
 
 
 if __name__ == "__main__":
