@@ -261,6 +261,28 @@ class EncryptionManager:
                 )
             sys.exit(1)
 
+    def _encrypt_bytes(self, filter_name: str, data: bytes) -> bytes:
+        """Raising helper shared by encrypt_stdin and the filter-process loop.
+
+        Owns none of the error policy - callers decide what to do on failure, since
+        a long-running process must never let an exception here kill the whole
+        checkout the way encrypt_stdin's sys.exit(1) would.
+        """
+        return self.__get_encryption_handler(
+            filter_name=filter_name, cache_only=True
+        ).encrypt_data(data)
+
+    def _decrypt_bytes(self, filter_name: str, data: bytes) -> bytes:
+        """Raising counterpart to _encrypt_bytes; see its docstring."""
+        return self.__get_encryption_handler(
+            filter_name=filter_name, cache_only=True
+        ).decrypt_data(data)
+
+    def run_filter_process(self, filter_name: str) -> int:
+        from git_secret_protector.services.filter_process import run_filter_process
+
+        return run_filter_process(filter_name, self)
+
     def encrypt_stdin(self, file_name):
         logging.info(f"Encrypting data from stdin for file: {file_name}")
         input_data = sys.stdin.buffer.read()
@@ -279,9 +301,7 @@ class EncryptionManager:
                 logger.error("No filter found for file: %s", file_name)
                 sys.exit(1)
 
-            encrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name, cache_only=True
-            ).encrypt_data(input_data)
+            encrypted_data = self._encrypt_bytes(filter_name, input_data)
 
             sys.stdout.buffer.write(encrypted_data)
             sys.stdout.buffer.flush()
@@ -315,9 +335,7 @@ class EncryptionManager:
                 logger.error("No filter found for file: %s", file_name)
                 return
 
-            decrypted_data = self.__get_encryption_handler(
-                filter_name=filter_name, cache_only=True
-            ).decrypt_data(encrypted_data)
+            decrypted_data = self._decrypt_bytes(filter_name, encrypted_data)
             logger.debug("Decrypted file: %s", file_name)
 
             sys.stdout.buffer.write(decrypted_data)
@@ -620,23 +638,49 @@ class EncryptionManager:
         )
 
         for filter_name in filter_names:
-            check_clean = subprocess.run(
-                ["git", "config", "--get", f"filter.{filter_name}.clean"],
+            # One call covering all three keys (not the previous separate get-per-key
+            # calls): doctor reports which mode is ACTIVE, and both clean/smudge and
+            # process will be present by design once a repo adopts the process
+            # filter - a single read is enough to derive active mode from precedence.
+            config_out = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--get-regexp",
+                    f"^filter\\.{filter_name}\\.(clean|smudge|process)$",
+                ],
                 capture_output=True,
                 text=True,
-            ).stdout.strip()
-            check_smudge = subprocess.run(
-                ["git", "config", "--get", f"filter.{filter_name}.smudge"],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
+            ).stdout
+            configured = {}
+            for line in config_out.splitlines():
+                key, sep, value = line.partition(" ")
+                if sep:
+                    configured[key.rsplit(".", 1)[-1]] = value
 
-            if check_clean and check_smudge:
+            check_clean = configured.get("clean", "")
+            check_smudge = configured.get("smudge", "")
+            check_process = configured.get("process", "")
+
+            # gitattributes(5): a configured process filter always takes precedence
+            # over clean/smudge, so `process` present means that IS the active mode
+            # regardless of whether clean/smudge are also present (they always are,
+            # by design - see setup_filters).
+            if check_process:
                 checks.append(
                     {
                         "check": "git_config",
                         "status": "ok",
-                        "detail": f"filter '{filter_name}' configured in .git/config",
+                        "detail": f"filter '{filter_name}' active mode: process ({check_process})",
+                        "filter": filter_name,
+                    }
+                )
+            elif check_clean and check_smudge:
+                checks.append(
+                    {
+                        "check": "git_config",
+                        "status": "ok",
+                        "detail": f"filter '{filter_name}' active mode: clean/smudge",
                         "filter": filter_name,
                     }
                 )
@@ -925,6 +969,19 @@ class EncryptionManager:
 
         logger.info("Setting up Git filters for '%s'", filter_name)
         if check_clean or check_smudge:
+            # gitattributes(5): a configured process filter always takes precedence
+            # over clean/smudge, so writing `process` here while leaving clean/smudge
+            # untouched is the rollback mechanism - `git config --unset
+            # filter.<name>.process` alone restores the old per-file path.
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    f"filter.{filter_name}.process",
+                    f"git-secret-protector filter-process {filter_name}",
+                ],
+                check=True,
+            )
             subprocess.run(
                 ["git", "config", f"filter.{filter_name}.required", "true"], check=True
             )
@@ -957,10 +1014,19 @@ class EncryptionManager:
             check=True,
         )
         subprocess.run(
+            [
+                "git",
+                "config",
+                f"filter.{filter_name}.process",
+                f"git-secret-protector filter-process {filter_name}",
+            ],
+            check=True,
+        )
+        subprocess.run(
             ["git", "config", f"filter.{filter_name}.required", "true"], check=True
         )
         logger.debug(
-            "Git clean & smudge filters for '%s' have been set up successfully.",
+            "Git clean, smudge & process filters for '%s' have been set up successfully.",
             filter_name,
         )
 

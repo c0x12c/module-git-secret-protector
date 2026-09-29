@@ -50,4 +50,4 @@ jobs:
 
       - name: Run tests
         run: |
-          poetry run pytest tests/unit/
+          poetry run pytest tests/unit/ tests/filter_process/
