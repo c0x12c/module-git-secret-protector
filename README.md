@@ -10,15 +10,36 @@
 
 ## Install Guide
 
-### Requirements
+### Recommended: uv
 
-- pipx ([Download](https://pipx.pypa.io/stable/installation/))
+[uv](https://docs.astral.sh/uv/getting-started/installation/) is a single static binary that ships
+its own Python, so installing this way does not depend on the machine having a usable interpreter:
 
-- You can install the `git-secret-protector` module via pipx:
+```sh
+UV_PYTHON_PREFERENCE=only-managed uv tool install --python 3.12 git-secret-protector
+```
 
-  ```sh
-  pipx install git-secret-protector
-  ```
+`UV_PYTHON_PREFERENCE=only-managed` is not optional if that independence is the point. uv's
+interpreter choice is a configurable default, so a plain `uv tool install` can pick up a system
+Python that a later OS or Homebrew upgrade then moves or removes, which is the failure this command
+avoids. To confirm which interpreter it actually used, read the tool's `pyvenv.cfg` - the `home`
+line should point inside uv's own Python directory, not at `/opt/homebrew`, `/usr/bin` or `~/.pyenv`:
+
+```sh
+grep '^home' "$(uv tool dir)/git-secret-protector/pyvenv.cfg"
+```
+
+`uv tool list --show-paths` is not a substitute; it reports where the tool and its executable live,
+which says nothing about the interpreter underneath.
+
+### Alternative: pipx or pip
+
+Both install against whichever Python they find on the machine, so a later interpreter upgrade can
+break the installed tool. Requires Python 3.10 to 3.14.
+
+```sh
+pipx install git-secret-protector   # or: pip install git-secret-protector
+```
 
 ## Usage
 
