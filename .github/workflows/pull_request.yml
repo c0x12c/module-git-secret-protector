@@ -6,6 +6,10 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'poetry.lock'
+      # This file gates itself. Without it, a change to the matrix below is never
+      # run by the matrix it edits - measured on PR #120, where widening the Python
+      # range triggered only the changelog check and no tests at all.
+      - '.github/workflows/pull_request.yml'
 
 jobs:
   pytest:
