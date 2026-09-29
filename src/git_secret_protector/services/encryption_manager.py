@@ -357,11 +357,11 @@ class EncryptionManager:
             sys.exit(1)
         except Exception as e:
             logging.error(f"Decrypt data command failed: {e}", exc_info=True)
-            # Surface on stderr (git shows it) so a cache-miss key error is diagnosable;
-            # still pass the ciphertext through on stdout so checkout degrades, not hangs.
+            # Fail closed - never land ciphertext in the working tree as plaintext.
+            # A cache-miss key error is recoverable via pull-aes-key; this stderr
+            # line (git shows it) is the only place that hint reaches the user.
             print(f"git-secret-protector: {e}", file=sys.stderr)
-            sys.stdout.buffer.write(encrypted_data)
-            sys.stdout.buffer.flush()
+            sys.exit(1)
 
     def upgrade_scheme(self, filter_name: str, assume_yes: bool = False):
         filter_name = self._require_filter(filter_name)

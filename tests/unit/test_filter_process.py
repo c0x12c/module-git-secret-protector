@@ -178,11 +178,16 @@ def test_smudge_unsupported_format_error_yields_status_error():
     assert content == b""
 
 
-def test_smudge_generic_exception_passes_original_bytes_through_as_success():
+def test_smudge_generic_exception_yields_status_error_and_writes_no_content():
     manager = MagicMock()
-    manager._decrypt_bytes.side_effect = RuntimeError("cache miss")
-    payload = _client_handshake() + _client_file_command(
-        "smudge", "secrets.env", b"original-ciphertext"
+    manager._decrypt_bytes.side_effect = [
+        RuntimeError("cache miss"),
+        b"plaintext-two",
+    ]
+    payload = (
+        _client_handshake()
+        + _client_file_command("smudge", "secrets.env", b"original-ciphertext")
+        + _client_file_command("smudge", "other.env", b"ciphertext-two")
     )
     in_stream = io.BytesIO(payload)
     out_stream = io.BytesIO()
@@ -193,8 +198,13 @@ def test_smudge_generic_exception_passes_original_bytes_through_as_success():
     out_stream.seek(0)
     _skip_handshake_reply(out_stream)
     status_list, content, _ = _read_one_response(out_stream)
-    assert status_list == {"status": "success"}
-    assert content == b"original-ciphertext"
+    assert status_list == {"status": "error"}
+    assert content == b""
+
+    # A per-file error must not abort the process - the next file is still served.
+    status_list_two, content_two, _ = _read_one_response(out_stream)
+    assert status_list_two == {"status": "success"}
+    assert content_two == b"plaintext-two"
 
 
 def test_unknown_key_in_request_list_is_tolerated():
