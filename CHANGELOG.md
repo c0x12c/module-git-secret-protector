@@ -16,7 +16,7 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
-## [Unreleased]
+## [1.10.0] - 2026-09-29
 - Add Python 3.14 support and test Python 3.10, 3.12, and 3.14 in the CI matrix.
 
 ## [1.9.1] - 2026-08-12
