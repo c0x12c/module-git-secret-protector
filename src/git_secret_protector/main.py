@@ -68,8 +68,8 @@ def setup_aes_key(args):
     manager.setup_aes_key(filter_name=filter_name, scheme=args.scheme)
 
 
-def setup_filters(_):
-    manager.setup_filters()
+def setup_filters(args):
+    manager.setup_filters(use_process=getattr(args, "process", False))
 
 
 def pull_aes_key(args):
@@ -241,6 +241,12 @@ def _run():
         "setup-filters",
         help="Set up Git filters in Git config",
         parents=[common],
+    )
+    parser_setup_filters_stdin.add_argument(
+        "--process",
+        action="store_true",
+        default=False,
+        help="Register git's long-running filter process for faster multi-file operations; requires every client on the repo to be version 1.11.0 or newer",
     )
     parser_setup_filters_stdin.set_defaults(func=setup_filters)
 

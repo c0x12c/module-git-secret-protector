@@ -609,7 +609,7 @@ class TestEncryptionManagerService(unittest.TestCase):
         mock_run.side_effect = [
             MagicMock(stdout="git-secret-protector encrypt %f\n"),
             MagicMock(stdout="git-secret-protector decrypt %f\n"),
-            MagicMock(),
+            MagicMock(returncode=1),
             MagicMock(),
         ]
 
@@ -623,8 +623,31 @@ class TestEncryptionManagerService(unittest.TestCase):
             mock_run.call_args_list[1].args[0],
             ["git", "config", "--get", "filter.secret.smudge"],
         )
-        # An already-configured filter still gets `process` written, and clean/smudge
-        # are deliberately left in place as the rollback path.
+        # Default (no --process): an already-configured filter gets a best-effort
+        # `process` unset attempt (declarative config), never a `process` write.
+        self.assertEqual(
+            mock_run.call_args_list[2].args[0],
+            ["git", "config", "--unset", "filter.secret.process"],
+        )
+        mock_run.assert_called_with(
+            ["git", "config", "filter.secret.required", "true"],
+            check=True,
+        )
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_setup_filters_with_process_flag_writes_process_for_existing_filter(
+        self, mock_run
+    ):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        self.manager.setup_filters(use_process=True)
+
         self.assertEqual(
             mock_run.call_args_list[2].args[0],
             [
@@ -637,6 +660,72 @@ class TestEncryptionManagerService(unittest.TestCase):
         mock_run.assert_called_with(
             ["git", "config", "filter.secret.required", "true"],
             check=True,
+        )
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_setup_filters_default_unsets_preexisting_process(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+            MagicMock(returncode=0),
+            MagicMock(),
+        ]
+
+        self.manager.setup_filters()
+
+        self.assertEqual(
+            mock_run.call_args_list[2].args[0],
+            ["git", "config", "--unset", "filter.secret.process"],
+        )
+        # clean/smudge are never unset, only read.
+        for call in mock_run.call_args_list:
+            self.assertNotIn("--unset", call.args[0][:2])
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_setup_filters_default_writes_no_process_for_fresh_filter(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        mock_run.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(stdout=""),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        self.manager.setup_filters()
+
+        written_targets = [call.args[0][2] for call in mock_run.call_args_list[2:]]
+        self.assertNotIn("filter.secret.process", written_targets)
+        self.assertEqual(
+            mock_run.call_args_list[-1].args[0],
+            ["git", "config", "filter.secret.required", "true"],
+        )
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_setup_filters_with_process_flag_writes_process_for_fresh_filter(
+        self, mock_run
+    ):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        mock_run.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(stdout=""),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        self.manager.setup_filters(use_process=True)
+
+        self.assertEqual(
+            mock_run.call_args_list[4].args[0],
+            [
+                "git",
+                "config",
+                "filter.secret.process",
+                "git-secret-protector filter-process secret",
+            ],
         )
 
     def test_cache_key_iv_locally_writes_owner_only_mode(self):
