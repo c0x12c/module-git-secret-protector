@@ -119,12 +119,12 @@ class TestEncryptionManagerService(unittest.TestCase):
 
     @patch("git_secret_protector.services.encryption_manager.get_settings")
     def test_setup_aes_key_flag_overrides_config_default(self, mock_gs):
-        mock_gs.return_value.encryption_scheme = "v1"
+        mock_gs.return_value.encryption_scheme = "v2"
 
-        self.manager.setup_aes_key("myfilter", scheme="v2")
+        self.manager.setup_aes_key("myfilter", scheme="v1")
 
         _, kwargs = self.key_manager.setup_aes_key_and_iv.call_args
-        self.assertEqual(kwargs.get("scheme"), "v2")
+        self.assertEqual(kwargs.get("scheme"), "v1")
 
     def test_guarded_methods_require_filter_and_list_available_filters(self):
         self.git_attributes_parser.get_filter_names.return_value = ["a", "b"]
@@ -869,7 +869,7 @@ class TestEncryptionManagerService(unittest.TestCase):
                 "ok": True,
                 "command": "setup-aes-key",
                 "filter": "secret",
-                "scheme": "v1",  # built-in default when no --scheme/config
+                "scheme": "v2",  # built-in default when no --scheme/config
                 "message": "Successfully set up AES key for filter: secret",
             },
         )

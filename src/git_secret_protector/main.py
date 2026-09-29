@@ -54,7 +54,7 @@ def init_module_folder():
         config = configparser.ConfigParser()
         config["DEFAULT"] = {
             "module_name": "git-secret-protector",
-            "encryption_scheme": "v1",  # v1 = legacy AES-CBC (widest compat); v2 = authenticated
+            "encryption_scheme": "v2",  # v2 = authenticated (default); v1 = legacy AES-CBC, opt-down for pre-1.4.0 clients
             "log_level": "WARN",
             "log_max_size": "1048576",  # 10MB
         }
@@ -216,7 +216,7 @@ def _run():
         "--scheme",
         choices=["v1", "v2"],
         default=None,
-        help="Encryption scheme (default: config encryption_scheme, else v1 legacy AES-CBC; v2 is authenticated)",
+        help="Encryption scheme (default: config encryption_scheme, else v2 authenticated; v1 is legacy AES-CBC)",
     )
     parser_setup_aes_key.set_defaults(func=setup_aes_key)
 
