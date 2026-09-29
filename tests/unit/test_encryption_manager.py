@@ -17,6 +17,7 @@ from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.main import show_project_version
+from git_secret_protector.error.aes_key_error import AesKeyError
 from git_secret_protector.error.unsupported_format_error import UnsupportedFormatError
 from git_secret_protector.services.encryption_manager import EncryptionManager
 from tests.utils.random_utils import generate_random_string
@@ -605,7 +606,7 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertIn("Module:    git-secret-protector", output)
         self.assertIn("Repo root: /repo/root", output)
 
-    def test_decrypt_stdin_does_not_exit_when_decryption_raises(self):
+    def test_decrypt_stdin_exits_and_writes_nothing_on_generic_error(self):
         self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
         encrypted_data = b"ciphertext"
         stdout_buffer = io.BytesIO()
@@ -618,9 +619,36 @@ class TestEncryptionManagerService(unittest.TestCase):
             side_effect=RuntimeError("boom"),
         ):
             with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
-                self.manager.decrypt_stdin("secrets.env")
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.decrypt_stdin("secrets.env")
 
-        self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(stdout_buffer.getvalue(), b"")
+
+    def test_decrypt_stdin_exits_and_prints_hint_on_cache_miss(self):
+        # AesKeyError carries the actionable 'run pull-aes-key' recovery hint - it
+        # must still reach stderr verbatim on the fail-closed path.
+        self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
+        encrypted_data = b"ciphertext"
+        stdout_buffer = io.BytesIO()
+        stdin = SimpleNamespace(buffer=io.BytesIO(encrypted_data))
+        stdout = SimpleNamespace(buffer=stdout_buffer)
+        stderr = io.StringIO()
+        hint = "no cached key. Run: git-secret-protector pull-aes-key secret"
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__get_encryption_handler",
+            side_effect=AesKeyError(hint),
+        ):
+            with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as ctx:
+                        self.manager.decrypt_stdin("secrets.env")
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(stdout_buffer.getvalue(), b"")
+        self.assertIn(hint, stderr.getvalue())
 
     def test_decrypt_stdin_exits_and_writes_nothing_on_unsupported_format(self):
         # An unknown/newer wire or key format must fail closed: exit non-zero and NOT
@@ -669,13 +697,15 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.key_manager.retrieve_key_and_iv.side_effect = RuntimeError("cache miss")
 
         with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
-            self.manager.decrypt_stdin("secrets.env")
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.decrypt_stdin("secrets.env")
 
+        self.assertEqual(ctx.exception.code, 1)
         self.key_manager.retrieve_key_and_iv.assert_called_once_with(
             "secret", cache_only=True
         )
         self.key_manager.get_scheme.assert_not_called()
-        self.assertEqual(stdout_buffer.getvalue(), encrypted_data)
+        self.assertEqual(stdout_buffer.getvalue(), b"")
 
     def test_encrypt_stdin_cache_miss_prints_hint_to_stderr(self):
         self.git_attributes_parser.get_filter_name_for_file.return_value = "secret"
@@ -708,7 +738,8 @@ class TestEncryptionManagerService(unittest.TestCase):
         with patch("sys.stdin", stdin), patch("sys.stdout", stdout), patch(
             "sys.stderr", stderr
         ):
-            self.manager.decrypt_stdin("secrets.env")
+            with self.assertRaises(SystemExit):
+                self.manager.decrypt_stdin("secrets.env")
 
         self.assertIn("pull-aes-key", stderr.getvalue())
 

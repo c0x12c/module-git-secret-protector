@@ -23,6 +23,7 @@ opts out.
 
 ### Fixed
 - `doctor`'s plaintext scan now compares the working tree against the committed blob instead of failing on every healthy decrypted file. A file that is plaintext on disk but ciphertext at HEAD is the normal smudged state and no longer fails; a file committed as plaintext still fails; a file not yet committed warns instead of failing.
+- A failing smudge (per-file `clean`/`smudge` filters and the `filter.<name>.process` protocol) now fails closed instead of writing ciphertext into the working tree as if it were plaintext content. A cold key cache still recovers with `git-secret-protector pull-aes-key <filter>`.
 
 ## [1.12.0] - 2026-09-29
 

@@ -166,10 +166,10 @@ def run_filter_process(filter_name, manager, in_stream=None, out_stream=None) ->
                 print(f"git-secret-protector: {pathname}: {exc}", file=sys.stderr)
                 _send_response(out_stream, "error", b"")
             except Exception as exc:
-                # Mirrors decrypt_stdin today: degrade the checkout rather than
-                # invent plaintext or hang the whole operation on one bad file.
+                # Fail closed like the AesKeyError/UnsupportedFormatError branches
+                # above - never report ciphertext as a successful smudge.
                 print(f"git-secret-protector: {pathname}: {exc}", file=sys.stderr)
-                _send_response(out_stream, "success", content)
+                _send_response(out_stream, "error", b"")
         else:
             print(
                 f"git-secret-protector: unknown command {command!r} for {pathname}",
