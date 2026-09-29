@@ -16,6 +16,11 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [Unreleased]
+
+### Fixed
+- `doctor`'s plaintext scan now compares the working tree against the committed blob instead of failing on every healthy decrypted file. A file that is plaintext on disk but ciphertext at HEAD is the normal smudged state and no longer fails; a file committed as plaintext still fails; a file not yet committed warns instead of failing.
+
 ## [1.12.0] - 2026-09-29
 
 ### Changed
