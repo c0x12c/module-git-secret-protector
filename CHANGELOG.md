@@ -16,13 +16,22 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
-## [Unreleased]
-- Test the whole declared Python range in CI (3.10 through 3.14). The matrix covered three of five versions, so 3.11 and 3.13 were supported on paper and verified nowhere, and a consumer deploy pipeline was running 3.11.
-- Make `pull_request.yml` gate itself. Its `paths` filter listed `src`, `tests` and the lock file but not the workflow, so a change to the test matrix was never run by the matrix it edited - a green PR could ship a broken or narrowed matrix.
-- Document pinning the version in CI. An unpinned install resolves at run time, which is how a wire-format skew between the writer and the reader of an encrypted blob reaches production without anyone changing anything.
-- Document `uv tool install` as the recommended install path. uv ships its own Python, so installing no longer depends on the machine having a usable interpreter; pipx and pip remain documented as alternatives.
-- Remove the dead `install.sh` (it cloned tag v0.1.0 and copied a build artifact that has never existed) and `hooks/boto3.py` (never loaded by PyInstaller, which only reads `hook-<module>.py`), along with the now-unused `pyinstaller` dev dependency.
-- Add `filter-process <name>`: a git long-running filter process (gitattributes(5) `filter.<name>.process`) that replaces one interpreter spawn per file with one process per git command. `setup-filters` now also configures `process` while keeping `clean`/`smudge` in place, so rollback is a single `git config --unset filter.<name>.process`.
+## [1.11.0] - 2026-09-29
+
+### Added
+- `filter-process <name>`: git's long-running filter process (gitattributes(5) `filter.<name>.process`), which handles every blob in a git command with one process instead of one interpreter spawn per file. Measured on a 20-file checkout with the same build in both arms: about 110ms/file falls to about 24ms/file.
+
+### Changed
+- **`setup-filters` now also configures `filter.<name>.process`.** This changes behaviour on upgrade: a clone whose filters are re-registered by this version will use the new protocol path, because gitattributes(5) specifies that a configured process filter always takes precedence over `clean`/`smudge`. Those two entries are deliberately left in place, so rollback is a single `git config --unset filter.<name>.process` and an older client still works after it. If you install this version unpinned in CI, read that sentence twice. Note the filter is registered as a bare command name resolved through `PATH`, so a clone whose filters were written by this version will fail every git operation on a filtered file if `PATH` later resolves `git-secret-protector` to a pre-1.11.0 client - the subcommand does not exist there, and with `required = true` git aborts. Same `git config --unset` recovers it.
+- `uv tool install` is now the recommended install path. uv supplies its own Python, so installing no longer depends on the machine having a usable interpreter - relevant because Homebrew's default `python3` is now 3.14. pipx and pip remain documented as alternatives. The documented command pins `UV_PYTHON_PREFERENCE=only-managed`, which is not optional: uv's interpreter choice is a configurable default, so a bare `uv tool install` can select a system Python and reproduce the coupling this avoids.
+- Documented pinning the version in CI. An unpinned install resolves at run time, which is how a wire-format skew between whatever wrote an encrypted blob and whatever reads it reaches production with nobody having changed anything.
+
+### Removed
+- `install.sh` (cloned tag v0.1.0 and copied a build artifact that has never existed under that name) and `hooks/boto3.py` (never loaded - PyInstaller only reads hooks named `hook-<module>.py`), along with the now-unused `pyinstaller` dev dependency.
+
+### Internal
+- CI tests the whole declared Python range, 3.10 through 3.14. It covered three of five, so 3.11 and 3.13 were supported on paper and verified nowhere while a consumer deploy pipeline was running 3.11.
+- `pull_request.yml` now gates itself. Its `paths` filter listed `src`, `tests` and the lock file but not the workflow, so a change to the test matrix was never exercised by the matrix it edited - a green PR could have shipped a narrowed or broken matrix.
 
 ## [1.10.0] - 2026-09-29
 - Add Python 3.14 support and test Python 3.10, 3.12, and 3.14 in the CI matrix.
