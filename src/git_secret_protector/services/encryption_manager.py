@@ -109,12 +109,12 @@ class EncryptionManager:
             )
             sys.exit(1)
 
-    def setup_filters(self):
+    def setup_filters(self, use_process: bool = False):
         try:
             logger.info("Setting up filters")
             filter_names = self.git_attributes_parser.get_filter_names()
             for filter_name in filter_names:
-                self.__init_filter(filter_name=filter_name)
+                self.__init_filter(filter_name=filter_name, use_process=use_process)
             logger.info("Successfully set up filters")
             msg = "Successfully set up filters"
             self.output.info(msg)
@@ -954,7 +954,7 @@ class EncryptionManager:
                 return parent
 
     @staticmethod
-    def __init_filter(filter_name: str):
+    def __init_filter(filter_name: str, use_process: bool = False):
         # Check for existing Git filters
         check_clean = subprocess.run(
             ["git", "config", "--get", f"filter.{filter_name}.clean"],
@@ -969,19 +969,39 @@ class EncryptionManager:
 
         logger.info("Setting up Git filters for '%s'", filter_name)
         if check_clean or check_smudge:
-            # gitattributes(5): a configured process filter always takes precedence
-            # over clean/smudge, so writing `process` here while leaving clean/smudge
-            # untouched is the rollback mechanism - `git config --unset
-            # filter.<name>.process` alone restores the old per-file path.
-            subprocess.run(
-                [
-                    "git",
-                    "config",
-                    f"filter.{filter_name}.process",
-                    f"git-secret-protector filter-process {filter_name}",
-                ],
-                check=True,
-            )
+            if use_process:
+                # gitattributes(5): a configured process filter always takes
+                # precedence over clean/smudge, so writing `process` here while
+                # leaving clean/smudge untouched keeps them as the rollback path.
+                subprocess.run(
+                    [
+                        "git",
+                        "config",
+                        f"filter.{filter_name}.process",
+                        f"git-secret-protector filter-process {filter_name}",
+                    ],
+                    check=True,
+                )
+            else:
+                # Declarative: config must match the flags given. Best-effort
+                # unset (exits non-zero if nothing was set) so a plain re-run
+                # is the escape hatch for anyone left with `process` from a
+                # prior default-on setup.
+                unset_result = subprocess.run(
+                    ["git", "config", "--unset", f"filter.{filter_name}.process"],
+                    capture_output=True,
+                    text=True,
+                )
+                if unset_result.returncode == 0:
+                    logger.info("Removed filter.%s.process (opt-in only)", filter_name)
+                    sys.stdout.buffer.write(
+                        f"Removed existing filter.{filter_name}.process "
+                        "(opt-in only; re-run with --process to re-enable).".encode(
+                            "utf-8"
+                        )
+                        + b"\n"
+                    )
+                    sys.stdout.buffer.flush()
             subprocess.run(
                 ["git", "config", f"filter.{filter_name}.required", "true"], check=True
             )
@@ -1013,20 +1033,21 @@ class EncryptionManager:
             ],
             check=True,
         )
-        subprocess.run(
-            [
-                "git",
-                "config",
-                f"filter.{filter_name}.process",
-                f"git-secret-protector filter-process {filter_name}",
-            ],
-            check=True,
-        )
+        if use_process:
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    f"filter.{filter_name}.process",
+                    f"git-secret-protector filter-process {filter_name}",
+                ],
+                check=True,
+            )
         subprocess.run(
             ["git", "config", f"filter.{filter_name}.required", "true"], check=True
         )
         logger.debug(
-            "Git clean, smudge & process filters for '%s' have been set up successfully.",
+            "Git clean, smudge & filters for '%s' have been set up successfully.",
             filter_name,
         )
 
