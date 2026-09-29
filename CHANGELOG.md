@@ -16,6 +16,9 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [Unreleased]
+- Add Python 3.14 support and test Python 3.10, 3.12, and 3.14 in the CI matrix.
+
 ## [1.9.1] - 2026-08-12
 - **Fix:** a reader closing our stdout early (git tearing down a clean/smudge filter, `git-secret-protector status | head`, quitting a pager mid-`git diff`, or bulk subcommands like `git-secret-protector encrypt-files secret | head`) no longer prints `git-secret-protector: [Errno 32] Broken pipe` followed by `Exception ignored in: <_io.TextIOWrapper name='<stdout>'>`. Two separate causes: the generic handlers in the encrypt/decrypt stdin path reported a pipe close as an application error (and `decrypt` then wrote the ciphertext to the already-dead pipe, raising again), and CPython's interpreter-shutdown flush of `sys.stdout` re-raised outside any `try` block. The CLI now re-raises `BrokenPipeError` past the filter handlers, flushes stdout inside a `finally` so `sys.exit()`-based subcommands are covered, and redirects stdout/stderr to `/dev/null` before exiting 141 so the shutdown flush cannot raise. All `Output`-based commands now convert `BrokenPipeError` into `SystemExit(141)` at the shared print site so generic `except Exception` handlers cannot misreport a closed pipe as a command failure. The remaining bare stdout prints in `status`, `doctor`, and `init` now use the same guarded print path, so large `status` output can no longer be caught and misreported as `Status command failed: [Errno 32] Broken pipe` once the stdio buffer fills inside those command-level `try` blocks.
 
