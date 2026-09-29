@@ -17,6 +17,9 @@ opts out.
 -->
 
 ## [Unreleased]
+- Test the whole declared Python range in CI (3.10 through 3.14). The matrix covered three of five versions, so 3.11 and 3.13 were supported on paper and verified nowhere, and a consumer deploy pipeline was running 3.11.
+- Make `pull_request.yml` gate itself. Its `paths` filter listed `src`, `tests` and the lock file but not the workflow, so a change to the test matrix was never run by the matrix it edited - a green PR could ship a broken or narrowed matrix.
+- Document pinning the version in CI. An unpinned install resolves at run time, which is how a wire-format skew between the writer and the reader of an encrypted blob reaches production without anyone changing anything.
 - Document `uv tool install` as the recommended install path. uv ships its own Python, so installing no longer depends on the machine having a usable interpreter; pipx and pip remain documented as alternatives.
 - Remove the dead `install.sh` (it cloned tag v0.1.0 and copied a build artifact that has never existed) and `hooks/boto3.py` (never loaded by PyInstaller, which only reads `hook-<module>.py`), along with the now-unused `pyinstaller` dev dependency.
 - Add `filter-process <name>`: a git long-running filter process (gitattributes(5) `filter.<name>.process`) that replaces one interpreter spawn per file with one process per git command. `setup-filters` now also configures `process` while keeping `clean`/`smudge` in place, so rollback is a single `git config --unset filter.<name>.process`.

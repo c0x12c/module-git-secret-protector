@@ -51,6 +51,26 @@ break the installed tool. Requires Python 3.10 to 3.14.
 pipx install git-secret-protector   # or: pip install git-secret-protector
 ```
 
+### In CI: always pin
+
+An unpinned `pip install git-secret-protector` resolves the version at **run time**, so a pipeline
+that passed yesterday can behave differently today with no change to its own repo. This tool
+encrypts and decrypts files with a versioned wire format, so a version skew between whatever wrote a
+blob and whatever reads it is a decrypt failure, not a cosmetic difference. That failure has already
+happened once across this estate.
+
+```yaml
+- name: Install git-secret-protector
+  run: pip install 'git-secret-protector~=1.10'
+```
+
+`~=1.10` takes patch releases and refuses minor ones, so fixes arrive automatically while a change of
+default behaviour requires a deliberate bump. Pin exactly (`==1.10.0`) where reproducing an old
+pipeline run byte for byte matters.
+
+Keep the interpreter on a version this project tests. The CI matrix covers the whole declared range,
+3.10 to 3.14.
+
 ## Usage
 
 ### 1. Initial Setup for Repositories Owners
