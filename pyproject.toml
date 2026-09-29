@@ -17,7 +17,6 @@ google-auth = "^2.53.0"
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"
 mock = "^5.1.0"
-pyinstaller = "^6.20.0"
 tomlkit = "^0.15.0"
 
 [tool.poetry.scripts]

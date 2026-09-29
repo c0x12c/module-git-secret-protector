@@ -17,6 +17,8 @@ opts out.
 -->
 
 ## [Unreleased]
+- Document `uv tool install` as the recommended install path. uv ships its own Python, so installing no longer depends on the machine having a usable interpreter; pipx and pip remain documented as alternatives.
+- Remove the dead `install.sh` (it cloned tag v0.1.0 and copied a build artifact that has never existed) and `hooks/boto3.py` (never loaded by PyInstaller, which only reads `hook-<module>.py`), along with the now-unused `pyinstaller` dev dependency.
 - Add `filter-process <name>`: a git long-running filter process (gitattributes(5) `filter.<name>.process`) that replaces one interpreter spawn per file with one process per git command. `setup-filters` now also configures `process` while keeping `clean`/`smudge` in place, so rollback is a single `git config --unset filter.<name>.process`.
 
 ## [1.10.0] - 2026-09-29
