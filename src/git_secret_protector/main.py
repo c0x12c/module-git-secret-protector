@@ -113,6 +113,13 @@ def clean_filter(args):
     manager.clean_filter(filter_name=filter_name)
 
 
+def filter_process(args):
+    # Never touches Output: stdout here is the pkt-line protocol wire, same
+    # exemption as encrypt/decrypt - no --json/--quiet/--verbose flag may write
+    # to it.
+    sys.exit(manager.run_filter_process(filter_name=args.filter_name))
+
+
 def status_command(_):
     manager.status()
 
@@ -254,6 +261,17 @@ def _run():
         "file_name", type=str, help="Filename for encryption"
     )
     parser_encrypt_stdin.set_defaults(func=encrypt_stdin)
+
+    # Long-running filter process (filter.<name>.process): one process per git
+    # command instead of one per file. Stdout is the pkt-line wire, same as
+    # encrypt/decrypt above.
+    parser_filter_process = subparsers.add_parser(
+        "filter-process",
+        help="Run as a git long-running filter process (see filter.<name>.process)",
+        parents=[common],
+    )
+    parser_filter_process.add_argument("filter_name", type=str, help="The filter name")
+    parser_filter_process.set_defaults(func=filter_process)
 
     for cmd_name, func, help_text in filter_commands:
         parser_cmd = subparsers.add_parser(cmd_name, help=help_text, parents=[common])

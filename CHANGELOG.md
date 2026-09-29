@@ -16,6 +16,9 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [Unreleased]
+- Add `filter-process <name>`: a git long-running filter process (gitattributes(5) `filter.<name>.process`) that replaces one interpreter spawn per file with one process per git command. `setup-filters` now also configures `process` while keeping `clean`/`smudge` in place, so rollback is a single `git config --unset filter.<name>.process`.
+
 ## [1.10.0] - 2026-09-29
 - Add Python 3.14 support and test Python 3.10, 3.12, and 3.14 in the CI matrix.
 

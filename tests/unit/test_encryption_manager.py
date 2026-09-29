@@ -610,6 +610,7 @@ class TestEncryptionManagerService(unittest.TestCase):
             MagicMock(stdout="git-secret-protector encrypt %f\n"),
             MagicMock(stdout="git-secret-protector decrypt %f\n"),
             MagicMock(),
+            MagicMock(),
         ]
 
         self.manager.setup_filters()
@@ -621,6 +622,17 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertEqual(
             mock_run.call_args_list[1].args[0],
             ["git", "config", "--get", "filter.secret.smudge"],
+        )
+        # An already-configured filter still gets `process` written, and clean/smudge
+        # are deliberately left in place as the rollback path.
+        self.assertEqual(
+            mock_run.call_args_list[2].args[0],
+            [
+                "git",
+                "config",
+                "filter.secret.process",
+                "git-secret-protector filter-process secret",
+            ],
         )
         mock_run.assert_called_with(
             ["git", "config", "filter.secret.required", "true"],

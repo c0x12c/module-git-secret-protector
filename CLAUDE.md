@@ -32,17 +32,18 @@ Integration tests (`tests/integration/`) hit real cloud secret stores - run manu
 
 The product is the `git-secret-protector` CLI (entry `main:main`). Subcommands are defined in `main.py`:
 - `init` - interactive (or `--yes`) setup of `config.ini` (backend + module_name); non-destructive unless `--force`. Special-cased in `main()` to run before the eager auto-init so it sees the true pre-existing config.
-- `setup-filters` - write clean/smudge filters into `.git/config` from `.gitattributes`.
+- `setup-filters` - write clean/smudge AND `process` filters into `.git/config` from `.gitattributes`. Both stay configured together on purpose (see Architecture); `process` takes precedence when present.
 - `setup-aes-key <filter> [--scheme v1|v2]` / `pull-aes-key <filter>` / `rotate-key <filter>` - key lifecycle. `--scheme v1` opts down to legacy unauthenticated CBC for pre-1.4.0 clients (warns); rotate preserves the filter's scheme.
 - `upgrade-scheme <filter>` - one-way v1→v2 migration (confirm-gated, idempotent, re-encrypt → verify → flip blob last so failures stay recoverable).
 - `encrypt-files <filter>` / `decrypt-files <filter>` / `clean-filter <filter>` - bulk operations over a filter's matched files.
 - `encrypt <file>` / `decrypt <file>` - stdin↔stdout, invoked by git's clean/smudge filters per file. **Exempt from the output layer: stdout is the binary file payload, so no flag may write to it.**
+- `filter-process <filter>` - git long-running filter process (`filter.<name>.process`, gitattributes(5)): one process per git command instead of one per file. Same output-layer exemption as `encrypt`/`decrypt` - stdout is the pkt-line wire.
 - `status` / `doctor` / `version`.
 - Global flags (parent parser, accepted before or after the subcommand): `--quiet` / `--verbose` / `--json` (routed via `core/output.py` `Output`, injector-bound; `status`/`doctor`/`version` get full JSON schemas, action commands a `{ok,command,...}` envelope) and `--repo-root`.
 
 ## Architecture
 
-The tool is a CLI that integrates with git's smudge/clean filter mechanism to transparently encrypt/decrypt files on commit/checkout.
+The tool is a CLI that integrates with git's smudge/clean filter mechanism, and with git's long-running `filter.<name>.process` protocol, to transparently encrypt/decrypt files on commit/checkout.
 
 **Entry point:** `src/git_secret_protector/main.py`
 - Module-level eager initialization (`inj`, `manager`) runs before `main()` - this causes a crash when run outside a git repo (even for `--help`).
@@ -71,6 +72,8 @@ The tool is a CLI that integrates with git's smudge/clean filter mechanism to tr
 **Git integration** (`core/git_attributes_parser.py`):
 - Reads `.gitattributes` to map file glob patterns → filter names.
 - `get_filter_names()` returns all unique filter names; `get_files_for_filter(name)` globs matching files.
+
+**Long-running filter process** (`core/pktline.py`, `services/filter_process.py`): `filter.<name>.process` replaces one interpreter spawn per file with one process per git command. `pktline.py` is pure byte plumbing (pkt-line framing, no project knowledge); `filter_process.py` owns the handshake and per-file loop, and resolves the key LAZILY (never during the handshake) - a handshake-time failure makes git restart the process once per remaining file, per gitattributes(5), which is worse than the per-file spawn this replaces. `EncryptionManager._encrypt_bytes` / `_decrypt_bytes` are raising helpers shared with `encrypt_stdin` / `decrypt_stdin`; the two stdin methods keep owning their own (deliberately asymmetric) exit policy, while the filter-process loop maps the same failures to pkt-line status: a missing key (`AesKeyError`) is process-wide → `status=abort`; any other clean failure or a smudge `UnsupportedFormatError` is per-file → `status=error`; any other smudge failure passes the original ciphertext through as `status=success`, mirroring `decrypt_stdin` today. `setup_filters` writes `process` alongside `clean`/`smudge` rather than replacing them - gitattributes(5) says a configured process filter always takes precedence, so this doubles as the rollback mechanism (`git config --unset filter.<name>.process` alone restores the old path). Each side of the handshake is its own request/response round trip - the reply to git's client welcome must be flushed to the stream before reading git's capability list, or both sides block waiting on each other.
 
 ## Maintaining this file
 
