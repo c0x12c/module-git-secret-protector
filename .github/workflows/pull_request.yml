@@ -12,7 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.12', '3.14']
+        # The full range pyproject.toml declares. Testing a subset meant 3.11 and 3.13
+        # were supported on paper and verified nowhere; a consumer pipeline was running
+        # 3.11. Keep this list and the pyproject constraint in step.
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
       - name: Checkout code
