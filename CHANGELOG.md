@@ -18,6 +18,9 @@ opts out.
 
 ## [Unreleased]
 
+### Changed
+- The built-in default `encryption_scheme` is now `v2` (authenticated AES-256-CTR + HMAC) instead of `v1` (legacy unauthenticated AES-CBC). `v1` remains available via `--scheme v1` or `encryption_scheme = v1` in `config.ini` for clients that still need it; existing filters keep whatever scheme their key was already set up with.
+
 ### Fixed
 - `doctor`'s plaintext scan now compares the working tree against the committed blob instead of failing on every healthy decrypted file. A file that is plaintext on disk but ciphertext at HEAD is the normal smudged state and no longer fails; a file committed as plaintext still fails; a file not yet committed warns instead of failing.
 
