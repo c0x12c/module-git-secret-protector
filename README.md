@@ -12,12 +12,22 @@
 
 ### Recommended: uv
 
-[uv](https://docs.astral.sh/uv/getting-started/installation/) is a single static binary that ships
-its own Python, so installing this way does not depend on the machine having a usable interpreter:
+[uv](https://docs.astral.sh/uv/getting-started/installation/) is a single static binary that fetches
+and manages its own Python, so installing this way does not tie the tool to whichever interpreter the
+machine happens to have:
 
 ```sh
 UV_PYTHON_PREFERENCE=only-managed uv tool install --python 3.12 git-secret-protector
 ```
+
+`--python 3.12` is pinned deliberately rather than left to uv's newest. The CI action image is built
+on `python:3.12-alpine`, so pinning it here means local runs and CI run the same interpreter series,
+and 3.12 sits inside the supported 3.10 to 3.14 range with the widest client compatibility. Raise it
+only alongside the action image.
+
+On a machine with no managed interpreter yet, the first install downloads one (about 20 MB). If your
+environment sets `UV_PYTHON_DOWNLOADS=never`, or has no network, this fails with `No interpreter
+found ... in managed installations` - use the pipx or pip path below instead.
 
 `UV_PYTHON_PREFERENCE=only-managed` is not optional if that independence is the point. uv's
 interpreter choice is a configurable default, so a plain `uv tool install` can pick up a system
