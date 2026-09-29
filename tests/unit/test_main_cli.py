@@ -95,6 +95,26 @@ def test_repo_root_before_doctor_scans_target_repo(tmp_path):
     _init_git_repo(target)
     (target / ".gitattributes").write_text("secret.env filter=app\n")
     (target / "secret.env").write_text("PLAINTEXT\n")
+    # Commit it unencrypted so doctor sees a real leak (plaintext in HEAD),
+    # not merely an uncommitted file, which is a warn rather than a fail.
+    subprocess.run(
+        ["git", "add", "."], cwd=str(target), check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-m",
+            "add secret",
+        ],
+        cwd=str(target),
+        check=True,
+        capture_output=True,
+    )
 
     result = _run_main(["--repo-root", str(target), "doctor"], tmp_path)
 

@@ -36,7 +36,9 @@ class EncryptionManager:
         self.key_manager = key_manager
         self.key_rotator = key_rotator
         self.output = output if output is not None else Output()
-        self.magic_header = get_settings().magic_header.encode()
+        settings = get_settings()
+        self.magic_header = settings.magic_header.encode()
+        self.base_dir = settings.base_dir
 
     def _envelope_ok(self, command, **fields):
         return {"ok": True, "command": command, **fields}
@@ -791,14 +793,31 @@ class EncryptionManager:
             plaintext_files = []
 
             for file_path in files:
-                if not self.__is_encrypted(file_path):
+                # Working-tree plaintext is the correct, smudged state - the
+                # working tree alone can never tell a healthy repo from a leak.
+                # Only a HEAD comparison can: committed ciphertext means the
+                # filter did its job, committed plaintext means it never ran.
+                if self.__is_encrypted(file_path):
+                    continue
+
+                head_content = self.__read_head_bytes(file_path)
+                if head_content is None:
+                    checks.append(
+                        {
+                            "check": "plaintext_scan",
+                            "status": "warn",
+                            "detail": f"{file_path} is plaintext and not yet committed; it will be encrypted on add",
+                            "filter": filter_name,
+                        }
+                    )
+                elif not head_content.startswith(self.magic_header):
                     plaintext_files.append(file_path)
                     failed = True
                     checks.append(
                         {
                             "check": "plaintext_scan",
                             "status": "fail",
-                            "detail": f"{file_path} is tracked as secret but is PLAINTEXT in the working tree",
+                            "detail": f"{file_path} is COMMITTED AS PLAINTEXT: the blob in HEAD is not encrypted, so the secret is in git history. Re-encrypt it and rewrite the affected commits; rotate the credential, since it is already pushed.",
                             "filter": filter_name,
                         }
                     )
@@ -808,7 +827,7 @@ class EncryptionManager:
                     {
                         "check": "plaintext_scan",
                         "status": "ok",
-                        "detail": f"all tracked secret files are encrypted for '{filter_name}'",
+                        "detail": f"no unencrypted commits found for '{filter_name}'",
                         "filter": filter_name,
                     }
                 )
@@ -1068,3 +1087,23 @@ class EncryptionManager:
         except IOError:
             logger.error(f"Error reading file: {file_path}")
             return False
+
+    def __read_head_bytes(self, file_path: str):
+        """Return file_path's committed bytes at HEAD, or None if it isn't there.
+
+        A missing HEAD (fresh repo, no commits) and a path not yet committed
+        both surface as a non-zero git exit here, and both mean "not in HEAD" -
+        neither is a leak. Never logged: the return value is a secret's bytes.
+        """
+        rel_path = os.path.relpath(file_path, self.base_dir)
+        try:
+            result = subprocess.run(
+                ["git", "show", f"HEAD:{rel_path}"],
+                cwd=self.base_dir,
+                capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout

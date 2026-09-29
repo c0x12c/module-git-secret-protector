@@ -416,7 +416,9 @@ class TestEncryptionManagerService(unittest.TestCase):
 
         mock_run.side_effect = [
             MagicMock(stdout="git-secret-protector encrypt %f\n"),
-            MagicMock(stdout="git-secret-protector decrypt %f\n"),
+            # git show HEAD:<path> succeeds and returns plaintext - the file
+            # was committed unencrypted, a real leak.
+            MagicMock(returncode=0, stdout=b"plaintext-committed-content"),
         ]
 
         with patch("os.path.exists", return_value=True):
@@ -431,6 +433,113 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("[FAIL]", stdout.getvalue())
         self.assertIn("PLAINTEXT", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_ok_when_disk_plaintext_but_head_ciphertext(self, mock_run):
+        # The normal smudged state: plaintext on disk, ciphertext committed.
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(
+                returncode=0, stdout=self.manager.magic_header + b"ciphertext-body"
+            ),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertNotIn("[FAIL]", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_warns_when_plaintext_file_not_yet_committed(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            # git show fails: path is not in HEAD yet.
+            MagicMock(returncode=128, stdout=b""),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[WARN]", stdout.getvalue())
+        self.assertNotIn("[FAIL]", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_survives_missing_head_without_crashing(self, mock_run):
+        # A repo with no commits at all: git show raises rather than
+        # returning a non-zero exit on some platforms - either way, no crash.
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            OSError("no such repository"),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    result = self.manager.doctor()
+
+        self.assertEqual(result, 0)
+        self.assertIn("[WARN]", stdout.getvalue())
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_plaintext_scan_never_prints_file_content(self, mock_run):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        stdout = io.StringIO()
+
+        leaked_marker = b"super-secret-committed-value-should-never-print"
+        mock_run.side_effect = [
+            MagicMock(stdout="git-secret-protector encrypt %f\n"),
+            MagicMock(returncode=0, stdout=leaked_marker),
+        ]
+
+        with patch("os.path.exists", return_value=True):
+            with patch.object(
+                self.manager,
+                "_EncryptionManager__is_encrypted",
+                return_value=False,
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    self.manager.doctor()
+
+        self.assertNotIn(leaked_marker.decode(), stdout.getvalue())
 
     @patch("git_secret_protector.services.encryption_manager.subprocess.run")
     def test_doctor_warns_on_offline_backend_without_failing(self, mock_run):
@@ -906,7 +1015,11 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
         self.key_manager.is_cached.return_value = True
         self.key_manager.resolve_parameter_name.return_value = "/path"
-        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        mock_run.side_effect = [
+            MagicMock(stdout="x\n"),
+            # git show HEAD:<path> returns plaintext - committed unencrypted.
+            MagicMock(returncode=0, stdout=b"y\n"),
+        ]
         out = io.StringIO()
         self.manager.output = Output(json=True)
         with patch("os.path.exists", return_value=True), patch.object(
@@ -980,9 +1093,7 @@ class TestEncryptionManagerService(unittest.TestCase):
                 self.manager.doctor()
         text = out.getvalue()
         self.assertIn("[ OK ] filters declared: secret", text)
-        self.assertIn(
-            "[ OK ] all tracked secret files are encrypted for 'secret'", text
-        )
+        self.assertIn("[ OK ] no unencrypted commits found for 'secret'", text)
 
     # ----- Task-6 tests: scheme surfaced in status and doctor -----
 
