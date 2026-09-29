@@ -16,10 +16,11 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
-## [Unreleased]
+## [1.12.0] - 2026-09-29
 
 ### Changed
 
+- **If you ran `setup-filters` with 1.11.0**, that clone still has `filter.<name>.process` set. Re-run `setup-filters` with this version to clear it, or `git config --unset filter.<name>.process` by hand. Nothing reconfigures an existing clone on its own.
 - `setup-filters` no longer registers `filter.<name>.process` by default; pass `--process` to opt in. A plain `setup-filters` on a repo that already has `process` set unsets it, restoring the clean/smudge-only path. Registering `process` unpinned exposed every client behind an older release to a hard failure - a bare command name resolved through `PATH` breaks every git operation on a filtered file when `PATH` picks up a pre-1.11.0 client - while the per-file speedup it buys is under a second on a realistic checkout.
 
 ## [1.11.0] - 2026-09-29
