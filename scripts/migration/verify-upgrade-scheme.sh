@@ -74,7 +74,13 @@ case "$FILTER_FOUND" in
   *)   die "could not parse status --json from $REPO" ;;
 esac
 
-mapfile -t FILES < <(read_status -c '
+# NOT mapfile: /bin/bash on macOS is 3.2, where mapfile does not exist and would
+# leave FILES empty - an empty list reads as "filter matched nothing" and the script
+# would exit without ever checking anything.
+FILES=()
+while IFS= read -r _line; do
+  [ -n "$_line" ] && FILES+=("$_line")
+done < <(read_status -c '
 import json,sys,os
 d = json.load(sys.stdin)
 root = d.get("repo_root") or os.getcwd()
@@ -101,10 +107,23 @@ else:
 printf 'repo:   %s\n' "$REPO"
 printf 'filter: %s (%d file(s))\n' "$FILTER" "${#FILES[@]}"
 
-# A dirty matched file means the checksum baseline would capture uncommitted work and
-# the comparison could not tell a migration bug from an unsaved edit.
-DIRTY=$(git status --porcelain -- "${FILES[@]}" 2>/dev/null | wc -l | tr -d ' ')
-[ "$DIRTY" = "0" ] || die "$DIRTY matched file(s) have uncommitted changes - commit or stash first"
+# A matched file with uncommitted CONTENT changes would put unsaved work into the
+# checksum baseline, and the comparison could then not tell a migration bug from an
+# unsaved edit. So this refuses to run - but it must ask the right question.
+#
+# NOT `git status --porcelain`: measured on a tree whose files sit as ciphertext at
+# rest (a normal mid-migration state), porcelain reports every matched file as " M"
+# while the worktree bytes are IDENTICAL to the committed blob and `git diff` reports
+# no change at all. Gating on porcelain therefore refuses to run on exactly the trees
+# this script exists to repair. `git diff` compares content through the filter, which
+# is the question being asked.
+git update-index --refresh >/dev/null 2>&1 || true
+if ! git diff --quiet -- "${FILES[@]}" 2>/dev/null; then
+  die "matched file(s) have uncommitted changes - commit or stash first"
+fi
+if ! git diff --cached --quiet -- "${FILES[@]}" 2>/dev/null; then
+  die "matched file(s) have staged changes - commit or unstage first"
+fi
 
 state_of() {
   # Header probe only. Reads 9 bytes, never the payload.
@@ -120,23 +139,32 @@ for f in "${FILES[@]}"; do
 done
 printf 'at rest: %d plaintext, %d ciphertext\n' "$PLAIN" "$CIPHER"
 
+# The comparison is only meaningful if both sides measure the SAME representation.
+# The run always ends with the tree in plaintext, so a tree that starts with any
+# ciphertext must be normalised first - otherwise "before" hashes ciphertext,
+# "after" hashes plaintext, and every such file reports a spurious content change.
+# A mixed tree is normal mid-migration, so this is not an edge case.
+NORMALISED=no
+
 if [ "$MODE" != "--apply" ]; then
   cat <<EOF
 
 DRY RUN - nothing was changed.
 
 What --apply would do, in order:
-  1. checksum the decrypted content of all ${#FILES[@]} file(s)
-  2. $GSP upgrade-scheme $FILTER --yes   (re-encrypts every file, then flips the key blob)
-  3. assert every file now carries the v2 version byte
-  4. $GSP decrypt-files $FILTER          (restore the working tree to plaintext)
-  5. re-checksum and compare against step 1, per file
+  1. if any file is at rest as ciphertext, decrypt-files first so the
+     before/after comparison measures the same representation
+  2. checksum the plaintext of all ${#FILES[@]} file(s)
+  3. $GSP upgrade-scheme $FILTER --yes   (re-encrypts every file, then flips the key blob)
+  4. assert every file now carries the v2 version byte
+  5. $GSP decrypt-files $FILTER          (restore the working tree to plaintext)
+  6. re-checksum and compare against step 2, per file
 
 The run FAILS if any checksum differs. Content changing is a data-loss bug, not a
 migration; the key blob's own verify step cannot see it because it only checks the
 version byte.
 
-RECOVERY, if step 5 reports a mismatch:
+RECOVERY, if step 6 reports a mismatch:
   git -C $REPO checkout -- <the named files>
   The committed blob is untouched until you commit, so the files are recoverable.
   The key blob, however, is already v2 and NO CLI sets it back. Until it is restored
@@ -153,8 +181,18 @@ chmod 700 "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 BEFORE="$WORK/before.sha" AFTER="$WORK/after.sha"
 
+if [ "$CIPHER" -gt 0 ]; then
+  printf 'normalising %d ciphertext file(s) to plaintext before baselining...\n' "$CIPHER"
+  "$GSP" decrypt-files "$FILTER" >/dev/null || die "decrypt-files failed while normalising; cannot establish a comparable baseline"
+  NORMALISED=yes
+  for f in "${FILES[@]}"; do
+    [ "$(state_of "$f")" = plaintext ] || die "still ciphertext after normalising: $f"
+  done
+fi
+
 for f in "${FILES[@]}"; do printf '%s  %s\n' "$(hash_of "$f")" "$f" >> "$BEFORE"; done
-printf 'baseline: %d checksum(s) recorded\n' "${#FILES[@]}"
+printf 'baseline: %d plaintext checksum(s) recorded%s\n' "${#FILES[@]}" \
+  "$([ "$NORMALISED" = yes ] && printf ' (after normalising)' || true)"
 
 printf '\n-- upgrade-scheme --\n'
 if ! "$GSP" upgrade-scheme "$FILTER" --yes; then
