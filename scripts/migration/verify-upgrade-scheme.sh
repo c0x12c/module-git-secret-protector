@@ -117,6 +117,18 @@ printf 'filter: %s (%d file(s))\n' "$FILTER" "${#FILES[@]}"
 # no change at all. Gating on porcelain therefore refuses to run on exactly the trees
 # this script exists to repair. `git diff` compares content through the filter, which
 # is the question being asked.
+# Every matched file must be TRACKED. Two reasons, and the second is the dangerous
+# one: `git diff` says nothing about an untracked file, so it would slip through the
+# gate below; and `git checkout -- "${FILES[@]}"` rejects the ENTIRE pathspec when any
+# element is untracked, so the failure-path restore would silently do nothing for all
+# files, not just the untracked one. An untracked matched file also has no committed
+# blob to recover from at all.
+UNTRACKED=""
+for f in "${FILES[@]}"; do
+  git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || UNTRACKED="$UNTRACKED $f"
+done
+[ -z "$UNTRACKED" ] || die "matched file(s) are not tracked by git, so they have no committed blob to recover from:$UNTRACKED"
+
 git update-index --refresh >/dev/null 2>&1 || true
 if ! git diff --quiet -- "${FILES[@]}" 2>/dev/null; then
   die "matched file(s) have uncommitted changes - commit or stash first"
@@ -130,7 +142,38 @@ state_of() {
   if head -c 9 "$1" 2>/dev/null | grep -q ENCRYPTED; then echo ciphertext; else echo plaintext; fi
 }
 
-hash_of() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; }
+# Resolved once, at startup, and PROVEN against a known value. The failure being
+# guarded is the worst kind this script can have: if the hasher is missing, a naive
+# hash_of returns "" for every file, BEFORE and AFTER both become lists of empty
+# hashes, they compare equal, and a data-loss check prints PASS having verified
+# nothing. An empty hash must never be able to mean "identical".
+HASHER=""
+if command -v shasum >/dev/null 2>&1; then HASHER="shasum -a 256"
+elif command -v sha256sum >/dev/null 2>&1; then HASHER="sha256sum"
+else die "no sha256 tool found (need shasum or sha256sum)"
+fi
+_probe=$(printf 'x' | $HASHER 2>/dev/null | cut -d' ' -f1)
+[ "$_probe" = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" ] \
+  || die "$HASHER did not produce the expected sha256 of a known input; refusing to run"
+
+hash_of() {
+  local h
+  h=$($HASHER "$1" 2>/dev/null | cut -d' ' -f1)
+  # 64 hex chars or nothing - a short or empty result is a broken measurement, not
+  # a value to compare.
+  case "$h" in
+    ????????????????????????????????????????????????????????????????) printf '%s' "$h" ;;
+    *) return 1 ;;
+  esac
+}
+
+record_hashes() { # $1 = output manifest
+  local out="$1" f h
+  for f in "${FILES[@]}"; do
+    h=$(hash_of "$f") || die "cannot checksum $f - refusing to report a result"
+    printf '%s  %s\n' "$h" "$f" >> "$out"
+  done
+}
 
 PLAIN=0 CIPHER=0
 for f in "${FILES[@]}"; do
@@ -190,7 +233,7 @@ if [ "$CIPHER" -gt 0 ]; then
   done
 fi
 
-for f in "${FILES[@]}"; do printf '%s  %s\n' "$(hash_of "$f")" "$f" >> "$BEFORE"; done
+record_hashes "$BEFORE"
 printf 'baseline: %d plaintext checksum(s) recorded%s\n' "${#FILES[@]}" \
   "$([ "$NORMALISED" = yes ] && printf ' (after normalising)' || true)"
 
@@ -235,7 +278,7 @@ done
 printf '\n-- restore the working tree to plaintext --\n'
 "$GSP" decrypt-files "$FILTER" || die "decrypt-files failed - the working tree still holds CIPHERTEXT. Do not run terraform or any app against this checkout until it is restored."
 
-for f in "${FILES[@]}"; do printf '%s  %s\n' "$(hash_of "$f")" "$f" >> "$AFTER"; done
+record_hashes "$AFTER"
 
 printf '\n-- content comparison --\n'
 if diff -q "$BEFORE" "$AFTER" >/dev/null 2>&1; then
