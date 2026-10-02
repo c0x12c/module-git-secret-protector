@@ -36,6 +36,21 @@ class _UpgradeAbort(Exception):
         self.fields = fields
 
 
+# sys.exit() code reserved for "the scheme flip succeeded, but restoring the
+# working tree to its found state afterward failed" - distinct from the
+# ordinary failure exit(1) used everywhere else in upgrade_scheme. This is a
+# SUCCESSFUL upgrade with an INCOMPLETE restore, not a failed upgrade: the key
+# blob is already v2 and must never be re-flipped, so it cannot be reported
+# (or retried) the same way a real failure is. upgrade_scheme_all inspects
+# this exit code to tell the two apart without parsing output.
+#
+# 3, NOT 2: argparse already exits 2 for a usage error, which this CLI reaches on
+# `upgrade-scheme <filter> --all` (the mutually-exclusive case). Reusing 2 would make
+# the most urgent state in this command - the migration half-landed, a tree needs a
+# human - indistinguishable to a caller from someone mistyping the flags.
+_RESTORE_INCOMPLETE_EXIT_CODE = 3
+
+
 class EncryptionManager:
     @injector.inject
     def __init__(
@@ -524,27 +539,46 @@ class EncryptionManager:
 
         # Restore the tree to the state it was found in. The re-encrypt loop
         # above always leaves ciphertext; a tree found as plaintext must end
-        # decrypted. Best-effort: a failure here does not undo the (already
-        # successful) scheme flip, but it must be reported loudly.
+        # decrypted. A failure here does NOT undo the (already successful)
+        # scheme flip - the blob is v2 and staying v2 is correct - but it
+        # must never be reported as a plain success: an automated --json
+        # caller, or upgrade_scheme_all, must be able to see that the tree
+        # still needs attention.
         restore_failures = self.__restore_to_found_state(
             files, v2_handler, found_ciphertext
         )
 
-        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
-        self.output.info(msg)
-        ok_fields = {"counts": {"reencrypted": total, "total": total}}
         if restore_failures:
             failed_paths = [f for f, _ in restore_failures]
             self.output.error(
-                f"upgrade-scheme: upgraded to v2, but FAILED TO RESTORE the "
-                f"working tree for {len(failed_paths)} file(s) - they may "
-                f"still be ciphertext where this repo expects plaintext. "
-                f"Intervene by hand: {failed_paths}"
+                f"upgrade-scheme: filter '{filter_name}' upgraded to v2 "
+                f"successfully - the key blob IS v2 now, and re-running "
+                f"upgrade-scheme on '{filter_name}' is a no-op - but "
+                f"restoring the working tree to plaintext failed for "
+                f"{len(failed_paths)} file(s): {failed_paths}. Do NOT "
+                f"re-run the migration. Fix the tree, not the key, with: "
+                f"git-secret-protector decrypt-files {filter_name}"
             )
-            ok_fields["restore_failed_files"] = failed_paths
+            self.output.result(
+                self._envelope_err(
+                    "upgrade-scheme",
+                    f"upgraded to v2, but failed to restore the working "
+                    f"tree for {len(failed_paths)} file(s)",
+                    filter=filter_name,
+                    scheme_flip_succeeded=True,
+                    restore_failed_files=failed_paths,
+                )
+            )
+            sys.exit(_RESTORE_INCOMPLETE_EXIT_CODE)
+
+        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
+        self.output.info(msg)
         self.output.result(
             self._envelope_ok(
-                "upgrade-scheme", filter=filter_name, message=msg, **ok_fields
+                "upgrade-scheme",
+                filter=filter_name,
+                message=msg,
+                counts={"reencrypted": total, "total": total},
             )
         )
 
@@ -605,13 +639,23 @@ class EncryptionManager:
 
         upgraded = []
         failed = []
+        restore_incomplete_filter = None
         for name in pending:
             try:
                 self.upgrade_scheme(name, assume_yes=True, skip_preflight=True)
-            except SystemExit:
-                # The expected failure shape: upgrade_scheme itself already
-                # restored the tree and reported that filter's error envelope.
-                failed.append(name)
+            except SystemExit as e:
+                if e.code == _RESTORE_INCOMPLETE_EXIT_CODE:
+                    # Not a failed upgrade: the scheme flip for this filter
+                    # DID succeed. Counted as upgraded, but the run still
+                    # stops here - the tree needs a human, not the next
+                    # filter.
+                    upgraded.append(name)
+                    restore_incomplete_filter = name
+                else:
+                    # The expected failure shape: upgrade_scheme itself
+                    # already restored the tree and reported that filter's
+                    # error envelope.
+                    failed.append(name)
                 break
             except Exception as e:
                 # Defense in depth: upgrade_scheme is expected to catch and
@@ -631,6 +675,30 @@ class EncryptionManager:
                 failed.append(name)
                 break
             upgraded.append(name)
+
+        if restore_incomplete_filter:
+            not_attempted = [n for n in pending if n not in upgraded]
+            self.output.error(
+                f"upgrade-scheme --all: stopping after '{restore_incomplete_filter}' "
+                f"upgraded to v2 successfully, but its working tree restore "
+                f"failed - this is a human follow-up on the WORKING TREE, "
+                f"not a failed upgrade; the key blob for "
+                f"'{restore_incomplete_filter}' is already v2. "
+                f"Upgraded: {upgraded}. Not attempted: {not_attempted or 'none'}."
+            )
+            self.output.result(
+                self._envelope_err(
+                    "upgrade-scheme",
+                    f"filter '{restore_incomplete_filter}' upgraded to v2, "
+                    f"but its working tree restore failed",
+                    filter="--all",
+                    upgraded=upgraded,
+                    scheme_flip_succeeded=True,
+                    restore_incomplete_filter=restore_incomplete_filter,
+                    not_attempted=not_attempted,
+                )
+            )
+            sys.exit(_RESTORE_INCOMPLETE_EXIT_CODE)
 
         if failed:
             not_attempted = [
