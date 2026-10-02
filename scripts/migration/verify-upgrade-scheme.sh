@@ -136,14 +136,38 @@ if ! BRANCH=$(git symbolic-ref --short -q HEAD); then
 fi
 printf 'branch: %s\n' "$BRANCH"
 
-UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+# `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}` does NOT fail when the
+# tracked remote ref is missing - it echoes the literal string "@{upstream}" and exits
+# 0. Taken at face value that becomes the remote name too, so the gate ends up naming
+# "@{upstream}" in its own diagnostics instead of the branch. Resolve against the
+# config instead, which either names a real ref or is empty.
+UPSTREAM=""
+_up_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || true)
+_up_merge=$(git config --get "branch.$BRANCH.merge" 2>/dev/null || true)
+if [ -n "$_up_remote" ] && [ -n "$_up_merge" ]; then
+  UPSTREAM="$_up_remote/${_up_merge#refs/heads/}"
+fi
 if [ -z "$UPSTREAM" ]; then
   # No upstream is not fatal - a local-only branch is a legitimate place to stage this
   # - but it must be said out loud, because the staleness check below cannot run.
   printf 'WARNING: %s has no upstream; staleness NOT checked.\n' "$BRANCH" >&2
 else
-  git fetch --quiet origin 2>/dev/null || printf 'WARNING: git fetch failed; staleness measured against a possibly stale remote ref.\n' >&2
-  BEHIND=$(git rev-list --count "HEAD..$UPSTREAM" 2>/dev/null || echo 0)
+  # The remote comes from the upstream ref, not a hardcoded "origin" - a branch
+  # tracking a fork or a second remote would otherwise be measured against a ref
+  # nobody fetched.
+  REMOTE="$_up_remote"
+  git fetch --quiet "$REMOTE" 2>/dev/null \
+    || printf 'WARNING: git fetch %s failed; staleness is measured against the last-known remote ref.\n' "$REMOTE" >&2
+  # FAIL CLOSED. An earlier revision ended this with `|| echo 0`, so any rev-list
+  # error - a missing ref, an unreadable object - reported "0 commits behind" and the
+  # stale-checkout gate passed. A safety gate that cannot measure must refuse, not
+  # assume the safe answer.
+  if ! BEHIND=$(git rev-list --count "HEAD..$UPSTREAM" 2>/dev/null); then
+    die "cannot measure how far $BRANCH is behind $UPSTREAM. Refusing rather than assuming it is current."
+  fi
+  case "$BEHIND" in
+    ''|*[!0-9]*) die "unexpected commit count '$BEHIND' for HEAD..$UPSTREAM; refusing to run" ;;
+  esac
   printf 'upstream: %s (%s commit(s) behind)\n' "$UPSTREAM" "$BEHIND"
   MAX_BEHIND="${UPGRADE_SCHEME_MAX_BEHIND:-0}"
   if [ "$BEHIND" -gt "$MAX_BEHIND" ]; then
