@@ -123,6 +123,34 @@ printf 'filter: %s (%d file(s))\n' "$FILTER" "${#FILES[@]}"
 # element is untracked, so the failure-path restore would silently do nothing for all
 # files, not just the untracked one. An untracked matched file also has no committed
 # blob to recover from at all.
+# A STALE OR DETACHED checkout must not be migrated, and no other gate here can see
+# it. Measured on c0x12c-internal/service-insight: detached HEAD, 328 commits behind
+# origin/master, and ZERO dirty matched files - so the clean-tree gate below passes
+# and the run would have proceeded. What it would then do is re-encrypt the secrets
+# as they existed 328 commits ago, recover (on failure) from that old blob, and - if
+# committed - silently revert those secrets to their old content. A commit from a
+# detached HEAD also goes nowhere, so the migration would be lost while the key blob
+# stayed flipped.
+if ! BRANCH=$(git symbolic-ref --short -q HEAD); then
+  die "HEAD is detached at $(git rev-parse --short HEAD). Check out the branch you intend to migrate - a commit from here goes nowhere while the key blob stays flipped."
+fi
+printf 'branch: %s\n' "$BRANCH"
+
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+if [ -z "$UPSTREAM" ]; then
+  # No upstream is not fatal - a local-only branch is a legitimate place to stage this
+  # - but it must be said out loud, because the staleness check below cannot run.
+  printf 'WARNING: %s has no upstream; staleness NOT checked.\n' "$BRANCH" >&2
+else
+  git fetch --quiet origin 2>/dev/null || printf 'WARNING: git fetch failed; staleness measured against a possibly stale remote ref.\n' >&2
+  BEHIND=$(git rev-list --count "HEAD..$UPSTREAM" 2>/dev/null || echo 0)
+  printf 'upstream: %s (%s commit(s) behind)\n' "$UPSTREAM" "$BEHIND"
+  MAX_BEHIND="${UPGRADE_SCHEME_MAX_BEHIND:-0}"
+  if [ "$BEHIND" -gt "$MAX_BEHIND" ]; then
+    die "$BRANCH is $BEHIND commit(s) behind $UPSTREAM. Re-encrypting from a stale checkout commits OLD secret content over current master. Pull first (UPGRADE_SCHEME_MAX_BEHIND raises the bar if you know the gap is irrelevant)."
+  fi
+fi
+
 UNTRACKED=""
 for f in "${FILES[@]}"; do
   git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || UNTRACKED="$UNTRACKED $f"
@@ -182,6 +210,16 @@ for f in "${FILES[@]}"; do
 done
 printf 'at rest: %d plaintext, %d ciphertext\n' "$PLAIN" "$CIPHER"
 
+# The run normalises to plaintext to make the comparison meaningful, but it must hand
+# the checkout back in the state it was FOUND in. Measured on spartan-stratos/service-
+# olympus: filters are not configured in .git/config there, so its matched file sits as
+# CIPHERTEXT and an unconditional restore-to-plaintext would leave the owner a checkout
+# they did not choose. Mixed is treated as ciphertext: re-encrypting is the reversible
+# direction (decrypt-files recovers plaintext at any time), whereas leaving plaintext
+# on disk in a repo that stores ciphertext is the state that gets committed by mistake.
+if [ "$CIPHER" -gt 0 ]; then FOUND_STATE=ciphertext; else FOUND_STATE=plaintext; fi
+printf 'found state: %s (the run will restore to this)\n' "$FOUND_STATE"
+
 # The comparison is only meaningful if both sides measure the SAME representation.
 # The run always ends with the tree in plaintext, so a tree that starts with any
 # ciphertext must be normalised first - otherwise "before" hashes ciphertext,
@@ -200,8 +238,9 @@ What --apply would do, in order:
   2. checksum the plaintext of all ${#FILES[@]} file(s)
   3. $GSP upgrade-scheme $FILTER --yes   (re-encrypts every file, then flips the key blob)
   4. assert every file now carries the v2 version byte
-  5. $GSP decrypt-files $FILTER          (restore the working tree to plaintext)
+  5. $GSP decrypt-files $FILTER          (plaintext, so step 6 can compare)
   6. re-checksum and compare against step 2, per file
+  7. restore the tree to $FOUND_STATE, the state it was found in
 
 The run FAILS if any checksum differs. Content changing is a data-loss bug, not a
 migration; the key blob's own verify step cannot see it because it only checks the
@@ -282,7 +321,15 @@ record_hashes "$AFTER"
 
 printf '\n-- content comparison --\n'
 if diff -q "$BEFORE" "$AFTER" >/dev/null 2>&1; then
-  printf 'PASS: decrypted content identical for all %d file(s)\n' "${#FILES[@]}"
+  if [ "$FOUND_STATE" = ciphertext ]; then
+  printf 'restoring the tree to ciphertext, the state it was found in...\n'
+  "$GSP" encrypt-files "$FILTER" >/dev/null || die "content verified, but re-encrypting the tree failed - it currently holds PLAINTEXT where this repo keeps ciphertext. Restore before committing anything."
+  for f in "${FILES[@]}"; do
+    [ "$(state_of "$f")" = ciphertext ] || die "content verified, but $f is still plaintext after re-encrypting - restore by hand before committing."
+  done
+fi
+
+printf 'PASS: decrypted content identical for all %d file(s)\n' "${#FILES[@]}"
   [ "$BAD" -eq 0 ] || { printf 'but %d file(s) failed the version-byte check\n' "$BAD"; exit 1; }
   printf '\nNext: review the diff (ciphertext churn only) and open a PR.\n'
   exit 0
