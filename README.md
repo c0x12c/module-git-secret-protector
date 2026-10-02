@@ -324,11 +324,18 @@ Once all clients on a repository are on 1.4.0 or later, run:
 git-secret-protector upgrade-scheme <filter_name>
 ```
 
+Or upgrade every v1 filter in the repo in one run:
+
+```sh
+git-secret-protector upgrade-scheme --all
+```
+
 This command:
-- Re-encrypts all files matched by the filter using v2.
-- Updates the stored key blob so future encryptions also use v2.
-- Is confirm-gated (use `-y` / `--yes` to skip the prompt in automation).
-- Is idempotent - running it on an already-v2 filter is a no-op.
+- Re-encrypts all files matched by the filter using v2, then verifies the decrypted content is unchanged (checksum before/after) before updating the stored key blob - a content mismatch leaves the blob at v1 and reports the affected files.
+- Reuses the existing key and IV - it does **not** rotate the key.
+- Is confirm-gated (use `-y` / `--yes` to skip the prompt in automation; `--all` asks once for the whole run).
+- Is idempotent - running it on an already-v2 filter is a no-op; `--all` skips v2 filters automatically.
+- `--all` upgrades filters in sorted order and stops at the first failure, reporting which filters were upgraded and which were never attempted.
 - Is one-way - there is no downgrade command.
 
 #### Checking the active scheme

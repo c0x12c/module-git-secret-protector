@@ -344,3 +344,26 @@ def test_upgrade_scheme_filter_name_and_yes_parse(tmp_path):
     assert (
         result.returncode != 2
     ), f"argparse rejected upgrade-scheme -y: {result.stderr}"
+
+
+def test_upgrade_scheme_all_flag_parses(tmp_path):
+    """upgrade-scheme --all must be accepted by argparse."""
+    result = _run_main(["upgrade-scheme", "--help"], tmp_path)
+    assert result.returncode == 0
+    assert "--all" in result.stdout
+
+
+def test_upgrade_scheme_all_with_filter_name_is_rejected(tmp_path):
+    """--all plus a positional filter name contradict each other - rejected
+    before the manager is ever constructed, so no repo state is required."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    result = _run_main(
+        ["--repo-root", str(repo), "upgrade-scheme", "--all", "myfilter"],
+        tmp_path,
+    )
+
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr

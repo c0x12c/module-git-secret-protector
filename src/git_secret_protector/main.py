@@ -83,9 +83,18 @@ def rotate_key(args):
 
 
 def upgrade_scheme(args):
-    manager.upgrade_scheme(
-        filter_name=args.filter_name, assume_yes=getattr(args, "yes", False)
-    )
+    if getattr(args, "all", False):
+        if args.filter_name:
+            print(
+                "Error: --all and a filter name are mutually exclusive.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        manager.upgrade_scheme_all(assume_yes=getattr(args, "yes", False))
+    else:
+        manager.upgrade_scheme(
+            filter_name=args.filter_name, assume_yes=getattr(args, "yes", False)
+        )
 
 
 def decrypt_stdin(args):
@@ -304,11 +313,21 @@ def _run():
 
     parser_upgrade_scheme = subparsers.add_parser(
         "upgrade-scheme",
-        help="One-way upgrade of a filter from v1 (legacy AES-CBC) to v2 (AES-256-CTR+HMAC)",
+        help=(
+            "Re-encrypt a filter's files from v1 (legacy AES-CBC) to v2 "
+            "(AES-256-CTR+HMAC), verifying decrypted content is unchanged "
+            "before flipping the key blob. Does NOT rotate the key - it "
+            "reuses the existing key and IV."
+        ),
         parents=[common],
     )
     parser_upgrade_scheme.add_argument(
         "filter_name", type=str, nargs="?", help="The filter name"
+    )
+    parser_upgrade_scheme.add_argument(
+        "--all",
+        action="store_true",
+        help="Upgrade every v1 filter in the repo (skips filters already on v2)",
     )
     parser_upgrade_scheme.add_argument(
         "-y",
