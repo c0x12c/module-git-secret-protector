@@ -1,4 +1,5 @@
 import configparser
+import hashlib
 import logging
 import os
 import subprocess
@@ -9,6 +10,7 @@ from typing import Optional
 import injector
 
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.git_preflight import check_repo_preflight
 from git_secret_protector.core.output import Output, safe_print
 from git_secret_protector.core.settings import StorageType, get_settings
 from git_secret_protector.crypto.aes_encryption_handler import (
@@ -21,6 +23,17 @@ from git_secret_protector.services.key_rotator import KeyRotator
 from git_secret_protector.utils.project_version import get_project_version_from_metadata
 
 logger = logging.getLogger(__name__)
+
+
+class _UpgradeAbort(Exception):
+    """Internal signal for a controlled upgrade_scheme failure (as opposed to
+    an unexpected exception from set_scheme or the crypto calls) - carries the
+    envelope fields the caller should report alongside the restore outcome."""
+
+    def __init__(self, error, **fields):
+        super().__init__(error)
+        self.error = error
+        self.fields = fields
 
 
 class EncryptionManager:
@@ -363,7 +376,12 @@ class EncryptionManager:
             print(f"git-secret-protector: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def upgrade_scheme(self, filter_name: str, assume_yes: bool = False):
+    def upgrade_scheme(
+        self,
+        filter_name: str,
+        assume_yes: bool = False,
+        skip_preflight: bool = False,
+    ):
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         scheme = self.key_manager.get_scheme(filter_name)
@@ -383,6 +401,21 @@ class EncryptionManager:
             )
             return
 
+        if not skip_preflight and files:
+            refusals = check_repo_preflight(files, cwd=self.base_dir)
+            if refusals:
+                for refusal in refusals:
+                    self.output.error(f"upgrade-scheme: refusing - {refusal}")
+                self.output.result(
+                    self._envelope_err(
+                        "upgrade-scheme",
+                        "preflight refused",
+                        filter=filter_name,
+                        refusals=refusals,
+                    )
+                )
+                sys.exit(1)
+
         if not assume_yes:
             try:
                 answer = input(
@@ -400,54 +433,234 @@ class EncryptionManager:
             aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme="v2"
         )
 
-        for i, file in enumerate(files, 1):
-            self.output.progress(f"[{i}/{total}] {file}")
-            v2_handler.decrypt_file(file)
-            v2_handler.encrypt_file(file)
+        # Record, before touching anything, whether the tree was found at rest
+        # as plaintext or ciphertext - the upgrade must hand it back in that
+        # state. Mixed counts as ciphertext: re-encrypting is the reversible
+        # direction (decrypt-files recovers plaintext at any time), whereas
+        # leaving plaintext in a repo that stores ciphertext is the state that
+        # gets committed by mistake.
+        found_ciphertext = any(self.__is_encrypted(f) for f in files)
 
-        # Verify-after: each file must be encrypted and have the v2 version byte.
-        # set_scheme is called only after this passes so the blob stays v1 on failure.
-        v2_byte = AesEncryptionHandler.V2
-        failed_files = []
-        for file in files:
-            if not self.__is_encrypted(file):
-                failed_files.append(file)
-                continue
-            try:
-                with open(file, "rb") as fh:
-                    fh.read(len(self.magic_header))  # skip magic header
-                    byte = fh.read(1)
-                if byte != v2_byte:
+        # Baseline plaintext checksums, taken before any file is touched. A
+        # mismatch against this baseline is the one thing the version-byte
+        # check below cannot see.
+        before_hashes = self.__plaintext_checksums(files, v2_handler)
+
+        # Everything from here on may leave the working tree re-encrypted
+        # before failing - the re-encrypt loop writes ciphertext to disk
+        # immediately, well before set_scheme is reached. PR #127's shell
+        # harness restores on failure for exactly this reason: a failed
+        # migration must never leave ciphertext where a found-as-plaintext
+        # repo expects plaintext, since that is how a failed migration
+        # becomes an outage. So ANY failure past this point - format verify,
+        # content verify, or set_scheme itself raising (e.g. no backend
+        # credentials) - goes through the same restore-then-report path.
+        try:
+            for i, file in enumerate(files, 1):
+                self.output.progress(f"[{i}/{total}] {file}")
+                v2_handler.decrypt_file(file)
+                v2_handler.encrypt_file(file)
+
+            # Verify-after: each file must be encrypted and have the v2
+            # version byte. This proves the FORMAT changed; it cannot see
+            # content loss, which is what the checksum comparison below is
+            # for.
+            v2_byte = AesEncryptionHandler.V2
+            failed_files = []
+            for file in files:
+                if not self.__is_encrypted(file):
                     failed_files.append(file)
-            except IOError:
-                failed_files.append(file)
+                    continue
+                try:
+                    with open(file, "rb") as fh:
+                        fh.read(len(self.magic_header))  # skip magic header
+                        byte = fh.read(1)
+                    if byte != v2_byte:
+                        failed_files.append(file)
+                except IOError:
+                    failed_files.append(file)
 
-        if failed_files:
+            if failed_files:
+                raise _UpgradeAbort(
+                    f"verify failed - {len(failed_files)} file(s) not v2 "
+                    f"after re-encryption: {failed_files}",
+                    failed_files=failed_files,
+                )
+
+            # Content verification: decrypt every file again and compare
+            # against the baseline. A mismatch is a hard failure - set_scheme
+            # is NOT called, so the blob stays v1 and the committed blob
+            # (never touched by this command) stays the recovery path. Never
+            # logs a plaintext byte: checksums and paths only.
+            after_hashes = self.__plaintext_checksums(files, v2_handler)
+            mismatched = sorted(
+                f for f in files if before_hashes.get(f) != after_hashes.get(f)
+            )
+            if mismatched:
+                raise _UpgradeAbort(
+                    f"content verification failed - decrypted content "
+                    f"changed for {len(mismatched)} file(s): {mismatched}",
+                    mismatched_files=mismatched,
+                )
+
+            # Fail-safe: flip the blob to v2 only after both checks pass.
+            self.key_manager.set_scheme(filter_name, "v2")
+        except _UpgradeAbort as e:
+            self.__abort_upgrade(
+                filter_name, files, v2_handler, found_ciphertext, e.error, **e.fields
+            )
+        except Exception as e:
+            # Anything else - most commonly set_scheme raising because the
+            # backend is unreachable (no credentials, network) - must never
+            # surface as a raw traceback. --all depends on this to report a
+            # per-filter outcome instead of crashing mid-run.
+            self.__abort_upgrade(
+                filter_name,
+                files,
+                v2_handler,
+                found_ciphertext,
+                f"upgrade failed: {e}",
+            )
+
+        # Restore the tree to the state it was found in. The re-encrypt loop
+        # above always leaves ciphertext; a tree found as plaintext must end
+        # decrypted. Best-effort: a failure here does not undo the (already
+        # successful) scheme flip, but it must be reported loudly.
+        restore_failures = self.__restore_to_found_state(
+            files, v2_handler, found_ciphertext
+        )
+
+        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
+        self.output.info(msg)
+        ok_fields = {"counts": {"reencrypted": total, "total": total}}
+        if restore_failures:
+            failed_paths = [f for f, _ in restore_failures]
             self.output.error(
-                f"upgrade-scheme: verify failed - {len(failed_files)} file(s) "
-                f"not v2 after re-encryption: {failed_files}"
+                f"upgrade-scheme: upgraded to v2, but FAILED TO RESTORE the "
+                f"working tree for {len(failed_paths)} file(s) - they may "
+                f"still be ciphertext where this repo expects plaintext. "
+                f"Intervene by hand: {failed_paths}"
+            )
+            ok_fields["restore_failed_files"] = failed_paths
+        self.output.result(
+            self._envelope_ok(
+                "upgrade-scheme", filter=filter_name, message=msg, **ok_fields
+            )
+        )
+
+    def upgrade_scheme_all(self, assume_yes: bool = False):
+        filter_names = sorted(self.git_attributes_parser.get_filter_names())
+
+        pending = []
+        for name in filter_names:
+            scheme = self.key_manager.get_scheme(name)
+            if scheme == "v2":
+                self.output.info(f"Filter '{name}' is already on scheme v2; skipping.")
+                continue
+            pending.append(name)
+
+        if not pending:
+            msg = "No v1 filters found; nothing to upgrade."
+            self.output.info(msg)
+            self.output.result(
+                self._envelope_ok(
+                    "upgrade-scheme", filter="--all", message=msg, upgraded=[]
+                )
+            )
+            return
+
+        all_files = []
+        for name in pending:
+            all_files.extend(self.git_attributes_parser.get_files_for_filter(name))
+
+        # Preflight runs ONCE, before any filter is touched, over every file
+        # that will actually be re-encrypted by this run.
+        if all_files:
+            refusals = check_repo_preflight(all_files, cwd=self.base_dir)
+            if refusals:
+                for refusal in refusals:
+                    self.output.error(f"upgrade-scheme --all: refusing - {refusal}")
+                self.output.result(
+                    self._envelope_err(
+                        "upgrade-scheme",
+                        "preflight refused",
+                        filter="--all",
+                        refusals=refusals,
+                    )
+                )
+                sys.exit(1)
+
+        if not assume_yes:
+            try:
+                answer = input(
+                    f"Upgrade {len(pending)} filter(s) from v1 to v2 "
+                    f"({', '.join(pending)}; {len(all_files)} file(s) total)? "
+                    f"This re-encrypts ALL matched files. [y/N] "
+                )
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() not in {"y", "yes"}:
+                self.output.error("Aborted.")
+                return
+
+        upgraded = []
+        failed = []
+        for name in pending:
+            try:
+                self.upgrade_scheme(name, assume_yes=True, skip_preflight=True)
+            except SystemExit:
+                # The expected failure shape: upgrade_scheme itself already
+                # restored the tree and reported that filter's error envelope.
+                failed.append(name)
+                break
+            except Exception as e:
+                # Defense in depth: upgrade_scheme is expected to catch and
+                # report every failure itself, but --all must never let a
+                # traceback escape and skip the per-filter report even if
+                # that containment has a gap.
+                self.output.error(
+                    f"upgrade-scheme --all: filter '{name}' raised unexpectedly: {e}"
+                )
+                self.output.result(
+                    self._envelope_err(
+                        "upgrade-scheme",
+                        f"filter '{name}' raised unexpectedly: {e}",
+                        filter=name,
+                    )
+                )
+                failed.append(name)
+                break
+            upgraded.append(name)
+
+        if failed:
+            not_attempted = [
+                n for n in pending if n not in upgraded and n not in failed
+            ]
+            self.output.error(
+                f"upgrade-scheme --all: stopped after '{failed[0]}' failed. "
+                f"Upgraded: {upgraded or 'none'}. "
+                f"Not attempted: {not_attempted or 'none'}."
             )
             self.output.result(
                 self._envelope_err(
                     "upgrade-scheme",
-                    "verify-after failed",
-                    filter=filter_name,
-                    failed_files=failed_files,
+                    f"filter '{failed[0]}' failed",
+                    filter="--all",
+                    upgraded=upgraded,
+                    failed=failed,
+                    not_attempted=not_attempted,
                 )
             )
             sys.exit(1)
 
-        # Fail-safe: flip the blob to v2 only after all files are verified v2.
-        self.key_manager.set_scheme(filter_name, "v2")
-
-        msg = f"Successfully upgraded filter '{filter_name}' to scheme v2"
+        msg = (
+            f"Successfully upgraded {len(upgraded)} filter(s) to scheme v2: "
+            f"{', '.join(upgraded)}"
+        )
         self.output.info(msg)
         self.output.result(
             self._envelope_ok(
-                "upgrade-scheme",
-                filter=filter_name,
-                message=msg,
-                counts={"reencrypted": total, "total": total},
+                "upgrade-scheme", filter="--all", message=msg, upgraded=upgraded
             )
         )
 
@@ -1078,6 +1291,76 @@ class EncryptionManager:
         return AesEncryptionHandler(
             aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme
         )
+
+    def __plaintext_checksums(self, files, handler):
+        """sha256 of each file's decrypted plaintext; never logs a byte.
+
+        A file at rest as ciphertext (magic-header guarded) is decrypted in
+        memory only - the file on disk is never touched here. A file at rest
+        as plaintext is hashed as-is. Safe to call before or after this run
+        has re-encrypted the files, since both states are self-describing via
+        the magic header.
+        """
+        hashes = {}
+        for file in files:
+            with open(file, "rb") as fh:
+                data = fh.read()
+            if data.startswith(self.magic_header):
+                data = handler.decrypt_data(data)
+            hashes[file] = hashlib.sha256(data).hexdigest()
+        return hashes
+
+    def __restore_to_found_state(self, files, handler, found_ciphertext):
+        """Best-effort: hand the tree back in the state it was found in.
+
+        The re-encrypt loop in upgrade_scheme always leaves ciphertext on
+        disk, regardless of how the run ends. A tree found as ciphertext is
+        already where it started - nothing to do. A tree found as plaintext
+        must be decrypted back; this is called on BOTH the success and
+        failure paths, since the files are already re-encrypted by the time
+        any later check can fail (PR #127's lesson: a failed migration must
+        never leave ciphertext where a found-as-plaintext repo expects
+        plaintext).
+
+        Returns a list of (file, error) for any file that could not be
+        restored - those need a human. Never raises.
+        """
+        if found_ciphertext:
+            return []
+        failures = []
+        for file in files:
+            try:
+                if self.__is_encrypted(file):
+                    handler.decrypt_file(file)
+            except Exception as e:
+                failures.append((file, str(e)))
+        return failures
+
+    def __abort_upgrade(
+        self, filter_name, files, handler, found_ciphertext, error, **fields
+    ):
+        """Shared failure path once the re-encrypt loop has started: restore
+        the tree to the state it was found in, report the error envelope, and
+        exit. The key blob is never flipped before this point is reached, so
+        it stays at v1 - recoverable - no matter which check failed.
+        """
+        self.output.error(f"upgrade-scheme: {error}")
+        restore_failures = self.__restore_to_found_state(
+            files, handler, found_ciphertext
+        )
+        if restore_failures:
+            failed_paths = [f for f, _ in restore_failures]
+            self.output.error(
+                f"upgrade-scheme: FAILED TO RESTORE the working tree for "
+                f"{len(failed_paths)} file(s) - they may be left as "
+                f"ciphertext where this repo expects plaintext. Intervene by "
+                f"hand: {failed_paths}"
+            )
+            fields = {**fields, "restore_failed_files": failed_paths}
+        self.output.result(
+            self._envelope_err("upgrade-scheme", error, filter=filter_name, **fields)
+        )
+        sys.exit(1)
 
     def __is_encrypted(self, file_path: str):
         try:

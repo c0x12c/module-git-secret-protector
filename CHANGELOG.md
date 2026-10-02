@@ -18,8 +18,14 @@ opts out.
 
 ## [Unreleased]
 
+### Added
+- `upgrade-scheme --all`: upgrades every v1 filter in the repo to v2 behind one confirmation, skipping filters already on v2 and stopping at the first failure.
+- `upgrade-scheme` now verifies in-process that decrypted content is unchanged (sha256 before/after re-encryption) before flipping the key blob, for both a single filter and `--all`. A mismatch leaves the blob at v1 and names the affected files; it never logs a plaintext byte. It also restores the working tree to the state it was found in (plaintext or ciphertext) rather than always leaving ciphertext behind - including on failure (e.g. `set_scheme` failing because the backend is unreachable), not only on success, since the files are already re-encrypted by the time a later check can fail. Any exception past that point (format verify, content verify, `set_scheme` itself) is caught, reported as that filter's error envelope, and never escapes as a raw traceback - `--all` depends on this to report per-filter outcomes and stop cleanly at the first failure.
+- `core/git_preflight.py`: repo-level safety gates (detached HEAD, a branch behind its upstream with fail-closed measurement, untracked matched files) ported from `scripts/migration/verify-upgrade-scheme.sh`, now run automatically by `upgrade-scheme`.
+
 ### Changed
 - The built-in default `encryption_scheme` is now `v2` (authenticated AES-256-CTR + HMAC) instead of `v1` (legacy unauthenticated AES-CBC). `v1` remains available via `--scheme v1` or `encryption_scheme = v1` in `config.ini` for clients that still need it; existing filters keep whatever scheme their key was already set up with.
+- `upgrade-scheme` re-encrypts and verifies content; it does not rotate the key (same key and IV are reused).
 
 ### Fixed
 - `scripts/migration/verify-upgrade-scheme.sh`: verifies an `upgrade-scheme` v1 to v2 migration did not change any file's decrypted content, comparing checksums before and after and restoring the working tree to plaintext. Dry-run by default. On a failed run it restores the tree from git rather than leaving ciphertext in place.
