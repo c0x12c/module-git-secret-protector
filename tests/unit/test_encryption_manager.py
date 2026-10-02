@@ -2196,5 +2196,80 @@ class TestUpgradeSchemeExitCodes(unittest.TestCase):
         self.assertGreater(code, 2)
 
 
+class TestRestoreToFoundStateJudgesDiskNotIntent(unittest.TestCase):
+    """The restore must judge each file by its CURRENT state on disk, never by
+    assuming the re-encrypt loop completed.
+
+    That loop decrypts and then re-encrypts each file in turn, so a failure
+    between those two writes leaves that one file as PLAINTEXT. An earlier
+    version returned early for a found-as-ciphertext tree on the reasoning that
+    such a tree is already where it started - true only of a completed loop. The
+    cost of the gap was plaintext secrets sitting in a repo that stores
+    ciphertext, reported as a clean abort and committable.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.handler = AesEncryptionHandler(
+            aes_key=os.urandom(32),
+            iv=os.urandom(16),
+            magic_header=b"ENCRYPTED",
+            scheme="v2",
+        )
+        self.manager = EncryptionManager(
+            git_attributes_parser=MagicMock(),
+            key_manager=MagicMock(),
+            key_rotator=MagicMock(),
+        )
+
+    def _write(self, name, body, encrypted):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            fh.write(body)
+        if encrypted:
+            self.handler.encrypt_file(path)
+        return path
+
+    def _restore(self, files, found_ciphertext):
+        return self.manager._EncryptionManager__restore_to_found_state(
+            files, self.handler, found_ciphertext
+        )
+
+    def _is_encrypted(self, path):
+        with open(path, "rb") as fh:
+            return fh.read(9) == b"ENCRYPTED"
+
+    def test_found_ciphertext_reencrypts_a_file_left_plaintext_mid_loop(self):
+        done = self._write("done.env", "A=1\n", encrypted=True)
+        interrupted = self._write("interrupted.env", "B=2\n", encrypted=False)
+
+        failures = self._restore([done, interrupted], found_ciphertext=True)
+
+        self.assertEqual(failures, [])
+        self.assertTrue(self._is_encrypted(done))
+        self.assertTrue(
+            self._is_encrypted(interrupted),
+            "a file left plaintext by an interrupted loop must be re-encrypted, "
+            "not silently left as readable secrets",
+        )
+
+    def test_found_plaintext_still_decrypts_back(self):
+        encrypted = self._write("secrets.env", "C=3\n", encrypted=True)
+
+        failures = self._restore([encrypted], found_ciphertext=False)
+
+        self.assertEqual(failures, [])
+        self.assertFalse(self._is_encrypted(encrypted))
+
+    def test_restore_failure_is_reported_not_raised(self):
+        missing = os.path.join(self.tmp, "gone.env")
+
+        failures = self._restore([missing], found_ciphertext=True)
+
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], missing)
+
+
 if __name__ == "__main__":
     unittest.main()

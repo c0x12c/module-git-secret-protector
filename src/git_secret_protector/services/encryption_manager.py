@@ -1381,24 +1381,31 @@ class EncryptionManager:
     def __restore_to_found_state(self, files, handler, found_ciphertext):
         """Best-effort: hand the tree back in the state it was found in.
 
-        The re-encrypt loop in upgrade_scheme always leaves ciphertext on
-        disk, regardless of how the run ends. A tree found as ciphertext is
-        already where it started - nothing to do. A tree found as plaintext
-        must be decrypted back; this is called on BOTH the success and
-        failure paths, since the files are already re-encrypted by the time
-        any later check can fail (PR #127's lesson: a failed migration must
-        never leave ciphertext where a found-as-plaintext repo expects
-        plaintext).
+        Called on BOTH the success and failure paths, since the files are
+        already re-encrypted by the time any later check can fail (PR #127's
+        lesson: a failed migration must never leave ciphertext where a
+        found-as-plaintext repo expects plaintext).
+
+        Each file is judged by its CURRENT state on disk, never by assuming the
+        re-encrypt loop ran to completion. That loop decrypts and then
+        re-encrypts each file in turn, so a failure BETWEEN those two writes -
+        a full disk, an I/O error - leaves that one file as PLAINTEXT. An
+        earlier version returned early for a found-as-ciphertext tree, on the
+        reasoning that such a tree is already where it started; that is only
+        true of a completed loop, and the cost of the gap was plaintext secrets
+        sitting in a repo that stores ciphertext, reported as a clean abort and
+        committable.
 
         Returns a list of (file, error) for any file that could not be
         restored - those need a human. Never raises.
         """
-        if found_ciphertext:
-            return []
         failures = []
         for file in files:
             try:
-                if self.__is_encrypted(file):
+                is_encrypted = self.__is_encrypted(file)
+                if found_ciphertext and not is_encrypted:
+                    handler.encrypt_file(file)
+                elif not found_ciphertext and is_encrypted:
                     handler.decrypt_file(file)
             except Exception as e:
                 failures.append((file, str(e)))
