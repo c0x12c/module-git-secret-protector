@@ -10,6 +10,7 @@ empty list means clear. Every refusal names what to do about it, not just
 what is wrong.
 """
 
+import hashlib
 import os
 import subprocess
 
@@ -35,10 +36,71 @@ def _run_git(args, cwd):
         )
 
 
-def check_repo_preflight(matched_files, cwd=None, max_behind=None):
+def _run_git_bytes(args, cwd):
+    """Same never-raises contract as _run_git, but reads stdout as raw bytes.
+
+    `_run_git` is `text=True`, which universal-newline-decodes stdout - that
+    would silently alter CRLF plaintext inside a secret blob. Every `git
+    show` read of blob content goes through this instead.
+    """
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(
+            args=args, returncode=1, stdout=b"", stderr=str(e).encode()
+        )
+
+
+def _unstaged_bases(path, cwd):
+    """(indexed_blob, worktree_bytes, error) for the unstaged comparison."""
+    indexed = _run_git_bytes(["show", f":{path}"], cwd)
+    if indexed.returncode != 0:
+        return None, None, "cannot read the indexed blob"
+    try:
+        with open(os.path.join(cwd, path), "rb") as fh:
+            worktree_bytes = fh.read()
+    except OSError:
+        return None, None, "the worktree file is missing"
+    return indexed.stdout, worktree_bytes, None
+
+
+def _staged_bases(path, cwd):
+    """(HEAD_blob, indexed_blob, error) for the staged comparison.
+
+    Deliberately never reads the worktree - a staged change is judged
+    against what is in the index, not what is on disk.
+    """
+    head = _run_git_bytes(["show", f"HEAD:{path}"], cwd)
+    if head.returncode != 0:
+        return None, None, "cannot read the HEAD blob"
+    indexed = _run_git_bytes(["show", f":{path}"], cwd)
+    if indexed.returncode != 0:
+        return None, None, "cannot read the indexed blob"
+    return head.stdout, indexed.stdout, None
+
+
+def check_repo_preflight(
+    matched_files, cwd=None, max_behind=None, plaintext_of=None, notes=None
+):
     """Return refusal strings for a repo-wide re-encrypt; empty = safe to proceed.
 
     matched_files are the paths about to be re-encrypted in place.
+
+    plaintext_of(path, data: bytes) -> bytes is a caller-supplied resolver
+    this module never imports crypto to perform itself - it is how a
+    ciphertext difference gets decrypted down to a content comparison. A
+    file that is dirty only because it was committed under one encryption
+    scheme while its key blob declares the other decrypts to identical
+    plaintext on both sides and is NOT a real edit; callers that pass
+    nothing keep the old all-ciphertext-is-an-edit behaviour.
+
+    notes, if given, is a list this function APPENDS human-readable notes
+    to (the return value is still the refusal list only).
     """
     cwd = cwd or os.getcwd()
     refusals = []
@@ -145,18 +207,91 @@ def check_repo_preflight(matched_files, cwd=None, max_behind=None):
     # bytes are identical to the committed blob and diff reports no change. Gating on
     # porcelain would refuse to run on exactly the trees this is for.
     _run_git(["update-index", "--refresh"], cwd)
-    for scope, label in ((["diff"], "uncommitted"), (["diff", "--cached"], "staged")):
+    for scope, label, bases_fn in (
+        (["diff"], "uncommitted", _unstaged_bases),
+        (["diff", "--cached"], "staged", _staged_bases),
+    ):
         probe = _run_git([*scope, "--quiet", "--", *matched_files], cwd)
-        if probe.returncode == 1:
-            refusals.append(
-                f"matched file(s) have {label} changes. The abort path restores with "
-                "`git checkout`, which would discard them. Commit or stash first."
-            )
-        elif probe.returncode > 1:
+        if probe.returncode == 0:
+            continue
+        if probe.returncode > 1:
             # Fail closed: an unreadable index is not evidence the tree is clean.
             refusals.append(
                 f"cannot determine whether matched file(s) have {label} changes. "
                 "Refusing rather than assuming they are clean."
+            )
+            continue
+
+        # probe.returncode == 1: at least one matched file differs in this
+        # scope. Without a resolver there is no way to tell a real edit from
+        # a scheme-mismatch artifact, so keep the original fail-closed
+        # refusal verbatim - this is the pre-existing behaviour for every
+        # caller that does not pass plaintext_of.
+        if plaintext_of is None:
+            refusals.append(
+                f"matched file(s) have {label} changes. The abort path restores with "
+                "`git checkout`, which would discard them. Commit or stash first."
+            )
+            continue
+
+        # Probe each file INDIVIDUALLY - not `--name-only`, which has path-
+        # quoting edge cases - so a per-file failure stays per-file.
+        content_differs = []
+        cannot_compare = []
+        no_content_change = []
+        for f in matched_files:
+            file_probe = _run_git([*scope, "--quiet", "--", f], cwd)
+            if file_probe.returncode == 0:
+                continue
+            if file_probe.returncode > 1:
+                cannot_compare.append((f, "cannot determine whether it changed"))
+                continue
+
+            base_bytes, other_bytes, err = bases_fn(f, cwd)
+            if err is not None:
+                cannot_compare.append((f, err))
+                continue
+            try:
+                # decryption is what turns a raw ciphertext difference into a
+                # real content comparison - a file committed under one
+                # scheme while its blob declares the other decrypts to
+                # identical plaintext on both sides.
+                base_plain = plaintext_of(f, base_bytes)
+                other_plain = plaintext_of(f, other_bytes)
+            except Exception as e:
+                cannot_compare.append((f, f"plaintext_of raised: {e}"))
+                continue
+
+            if (
+                hashlib.sha256(base_plain).digest()
+                == hashlib.sha256(other_plain).digest()
+            ):
+                no_content_change.append(f)
+            else:
+                content_differs.append(f)
+
+        if cannot_compare:
+            # Distinct message from the plaintext-differs refusal below: a
+            # misleading "you have uncommitted edits" when the real cause is
+            # an uncached key is this gate's own complaint in a new shape.
+            refusals.append(
+                f"cannot compare plaintext for matched file(s) with {label} "
+                "changes, so refusing rather than assuming they are clean: "
+                + ", ".join(f"{path} ({why})" for path, why in cannot_compare)
+            )
+        if content_differs:
+            refusals.append(
+                f"matched file(s) have {label} content changes. The abort path "
+                "restores with `git checkout`, which would discard them. Commit "
+                "or stash first: " + ", ".join(content_differs)
+            )
+        if no_content_change and notes is not None:
+            notes.append(
+                "tree is dirty but carries no content change for: "
+                + ", ".join(no_content_change)
+                + " - this is a scheme-mismatch artifact (committed under one "
+                "encryption scheme while the key blob declares the other); "
+                "`upgrade-scheme` repairs it, not an edit to commit or stash."
             )
 
     # An untracked matched file has no committed blob to recover from, and

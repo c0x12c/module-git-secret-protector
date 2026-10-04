@@ -264,6 +264,170 @@ class TestCheckRepoPreflight(unittest.TestCase):
 
         self.assertTrue(any("cannot determine" in r for r in refusals), refusals)
 
+    def _content_aware_side_effect(
+        self, dirty_unstaged, head_blob, index_blob, worktree_bytes
+    ):
+        """Common plumbing for the content-aware tests below: a clean
+        detached/behind/untracked gate, a dirty UNSTAGED diff over the whole
+        batch and over each listed file, and fixed git-show bytes for the
+        staged/unstaged bases."""
+
+        def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+            argv = cmd[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)  # no upstream configured
+            if argv[:1] == ["ls-files"]:
+                return _cp(returncode=0)  # tracked
+            if argv[:1] == ["update-index"]:
+                return _cp()
+            if argv[:2] == ["diff", "--cached"]:
+                return _cp()  # nothing staged in these tests
+            if argv[:1] == ["diff"]:
+                path = argv[-1]
+                return _cp(returncode=1 if path in dirty_unstaged else 0)
+            if argv[:2] == ["show", f":{self._path}"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=index_blob, stderr=b""
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        return fake_run
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    @patch("git_secret_protector.core.git_preflight.open")
+    def test_equal_plaintext_is_not_refused_and_notes_why(self, mock_open, mock_run):
+        self._path = "a.secret"
+        committed = b"ciphertext-v2"
+        worktree = b"ciphertext-v1"
+        plaintext = b"same plaintext either way"
+
+        mock_run.side_effect = self._content_aware_side_effect(
+            dirty_unstaged={"a.secret"},
+            head_blob=None,
+            index_blob=committed,
+            worktree_bytes=worktree,
+        )
+        mock_open.return_value.__enter__.return_value.read.return_value = worktree
+
+        def plaintext_of(path, data):
+            return plaintext  # both sides decrypt identically regardless
+
+        notes = []
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=notes
+        )
+
+        self.assertEqual(refusals, [])
+        self.assertTrue(notes, "expected a note explaining the dirty-but-safe tree")
+        self.assertIn("a.secret", notes[0])
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    @patch("git_secret_protector.core.git_preflight.open")
+    def test_differing_plaintext_is_refused(self, mock_open, mock_run):
+        self._path = "a.secret"
+        committed = b"ciphertext-old"
+        worktree = b"ciphertext-new"
+
+        mock_run.side_effect = self._content_aware_side_effect(
+            dirty_unstaged={"a.secret"},
+            head_blob=None,
+            index_blob=committed,
+            worktree_bytes=worktree,
+        )
+        mock_open.return_value.__enter__.return_value.read.return_value = worktree
+
+        def plaintext_of(path, data):
+            return data  # no transform - committed vs worktree bytes differ
+
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=[]
+        )
+
+        self.assertTrue(any("content changes" in r for r in refusals), refusals)
+        self.assertTrue(any("a.secret" in r for r in refusals), refusals)
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    def test_plaintext_of_none_keeps_legacy_refusal(self, mock_run):
+        mock_run.side_effect = self._content_aware_side_effect(
+            dirty_unstaged={"a.secret"},
+            head_blob=None,
+            index_blob=b"x",
+            worktree_bytes=b"y",
+        )
+
+        refusals = check_repo_preflight(["a.secret"], cwd="/repo")
+
+        self.assertTrue(any("uncommitted" in r for r in refusals), refusals)
+        self.assertTrue(any("discard" in r for r in refusals), refusals)
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    @patch("git_secret_protector.core.git_preflight.open")
+    def test_plaintext_of_raising_is_cannot_compare_refusal(self, mock_open, mock_run):
+        self._path = "a.secret"
+        mock_run.side_effect = self._content_aware_side_effect(
+            dirty_unstaged={"a.secret"},
+            head_blob=None,
+            index_blob=b"ciphertext",
+            worktree_bytes=b"ciphertext2",
+        )
+        mock_open.return_value.__enter__.return_value.read.return_value = b"ciphertext2"
+
+        def plaintext_of(path, data):
+            raise RuntimeError("key not cached")
+
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=[]
+        )
+
+        self.assertTrue(any("cannot compare" in r for r in refusals), refusals)
+        self.assertFalse(
+            any("content changes" in r for r in refusals),
+            "cannot-compare must use a distinct message from content-differs",
+        )
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    def test_staged_only_divergence_is_refused_without_reading_worktree(self, mock_run):
+        # Staged scope compares HEAD:<path> against :<path> (the index) and
+        # must never consult the worktree - a staged change is judged by
+        # what is staged, not what is currently on disk.
+        def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+            argv = cmd[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)
+            if argv[:1] == ["ls-files"]:
+                return _cp(returncode=0)
+            if argv[:1] == ["update-index"]:
+                return _cp()
+            if argv[:2] == ["diff", "--cached"]:
+                path = argv[-1]
+                return _cp(returncode=1 if path == "a.secret" else 0)
+            if argv[:1] == ["diff"]:
+                return _cp()  # nothing unstaged
+            if argv[:2] == ["show", "HEAD:a.secret"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=b"head-bytes", stderr=b""
+                )
+            if argv[:2] == ["show", ":a.secret"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=b"index-bytes", stderr=b""
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        mock_run.side_effect = fake_run
+
+        def plaintext_of(path, data):
+            return data  # head-bytes != index-bytes -> real content change
+
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=[]
+        )
+
+        self.assertTrue(any("staged" in r and "a.secret" in r for r in refusals))
+
 
 if __name__ == "__main__":
     unittest.main()

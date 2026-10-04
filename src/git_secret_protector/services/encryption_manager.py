@@ -417,7 +417,14 @@ class EncryptionManager:
             return
 
         if not skip_preflight and files:
-            refusals = check_repo_preflight(files, cwd=self.base_dir)
+            filter_map = {f: filter_name for f in files}
+            plaintext_of = self.__plaintext_of_resolver(filter_map)
+            notes = []
+            refusals = check_repo_preflight(
+                files, cwd=self.base_dir, plaintext_of=plaintext_of, notes=notes
+            )
+            for note in notes:
+                self.output.info(f"upgrade-scheme: {note}")
             if refusals:
                 for refusal in refusals:
                     self.output.error(f"upgrade-scheme: refusing - {refusal}")
@@ -427,6 +434,7 @@ class EncryptionManager:
                         "preflight refused",
                         filter=filter_name,
                         refusals=refusals,
+                        notes=notes,
                     )
                 )
                 sys.exit(1)
@@ -628,13 +636,26 @@ class EncryptionManager:
             return
 
         all_files = []
+        filter_map = {}
         for name in pending:
-            all_files.extend(self.git_attributes_parser.get_files_for_filter(name))
+            files_for_name = self.git_attributes_parser.get_files_for_filter(name)
+            all_files.extend(files_for_name)
+            # --all spans MULTIPLE KEYS, so each path must resolve to the
+            # filter that actually owns it - a single shared handler would be
+            # wrong here, unlike the single-filter upgrade_scheme above.
+            for f in files_for_name:
+                filter_map[f] = name
 
         # Preflight runs ONCE, before any filter is touched, over every file
         # that will actually be re-encrypted by this run.
         if all_files:
-            refusals = check_repo_preflight(all_files, cwd=self.base_dir)
+            plaintext_of = self.__plaintext_of_resolver(filter_map)
+            notes = []
+            refusals = check_repo_preflight(
+                all_files, cwd=self.base_dir, plaintext_of=plaintext_of, notes=notes
+            )
+            for note in notes:
+                self.output.info(f"upgrade-scheme --all: {note}")
             if refusals:
                 for refusal in refusals:
                     self.output.error(f"upgrade-scheme --all: refusing - {refusal}")
@@ -644,6 +665,7 @@ class EncryptionManager:
                         "preflight refused",
                         filter="--all",
                         refusals=refusals,
+                        notes=notes,
                     )
                 )
                 sys.exit(1)
@@ -1383,6 +1405,25 @@ class EncryptionManager:
         return AesEncryptionHandler(
             aes_key=aes_key, iv=iv, magic_header=self.magic_header, scheme=scheme
         )
+
+    def __plaintext_of_resolver(self, filter_map):
+        """Build the `plaintext_of` callback check_repo_preflight calls to
+        decrypt a ciphertext difference down to a content comparison.
+
+        Mirrors __plaintext_checksums's own magic-header test: decrypt only
+        when the bytes are actually ciphertext, else return them unchanged
+        (a matched file is not required to be encrypted at every point in
+        its history). Uses `_decrypt_bytes`, which is `cache_only=True` -
+        an uncached key raises, and the gate must report that as
+        cannot-compare rather than silently fetching the key itself.
+        """
+
+        def plaintext_of(path, data):
+            if not data.startswith(self.magic_header):
+                return data
+            return self._decrypt_bytes(filter_map[path], data)
+
+        return plaintext_of
 
     def __plaintext_checksums(self, files, handler):
         """sha256 of each file's decrypted plaintext; never logs a byte.
