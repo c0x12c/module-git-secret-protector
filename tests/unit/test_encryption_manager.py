@@ -1,10 +1,14 @@
 import base64
 import configparser
 import contextlib
+import hashlib
 import io
 import json
 import os
 import secrets
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -1436,6 +1440,16 @@ class TestUpgradeScheme(unittest.TestCase):
             key_rotator=self.key_rotator,
         )
 
+        # Preflight is exercised in its own tests (TestGitPreflightIntegration /
+        # tests/unit/test_git_preflight.py). Default it to clear here so every
+        # other test in this class isn't also asserting repo-safety behavior.
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.mock_preflight = self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
     def test_idempotent_already_v2(self):
         """get_scheme -> 'v2': no-op, set_scheme NOT called, counts.reencrypted==0."""
         from git_secret_protector.core.output import Output
@@ -1489,13 +1503,17 @@ class TestUpgradeScheme(unittest.TestCase):
         magic_header = self.manager.magic_header
         v2_byte = b"\x02"
 
-        mock_handler = MagicMock(spec=["decrypt_file", "encrypt_file"])
+        mock_handler = MagicMock(spec=["decrypt_file", "encrypt_file", "decrypt_data"])
         mock_handler.decrypt_file.side_effect = lambda f: call_order.append(
             ("decrypt", f)
         )
         mock_handler.encrypt_file.side_effect = lambda f: call_order.append(
             ("encrypt", f)
         )
+        # Constant plaintext for the before/after content checksum: this test is
+        # about call ordering, not content verification, so both files hashing
+        # equal (and equal to themselves before/after) keeps that check a no-op.
+        mock_handler.decrypt_data.return_value = b"same-plaintext-both-files"
         self.key_manager.set_scheme.side_effect = lambda f, s: call_order.append(
             ("set_scheme", f, s)
         )
@@ -1581,6 +1599,10 @@ class TestUpgradeScheme(unittest.TestCase):
 
         handler = MagicMock()
         mock_handler_cls.return_value = handler
+        # Content checksum runs before and after the (mocked, no-op) re-encrypt
+        # loop; this test is about the version-byte verify, so a constant
+        # decrypt result keeps the checksum comparison a no-op.
+        handler.decrypt_data.return_value = b"same-plaintext"
 
         magic_header = self.manager.magic_header
         # Version byte is v1 (not 0x02) - simulate failed upgrade
@@ -1604,6 +1626,861 @@ class TestUpgradeScheme(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 1)
         # Blob must stay v1 on verify failure - set_scheme must NOT have been called.
         self.key_manager.set_scheme.assert_not_called()
+
+    def test_preflight_refusal_blocks_before_any_file_is_touched(self):
+        """A preflight refusal exits 1 before re-encrypting and never calls set_scheme."""
+        self.mock_preflight.return_value = ["HEAD is detached at abc1234."]
+        self.key_manager.get_scheme.return_value = "v1"
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("HEAD is detached", stderr.getvalue())
+        self.key_manager.set_scheme.assert_not_called()
+        self.key_manager.retrieve_key_and_iv.assert_not_called()
+
+    def test_skip_preflight_does_not_call_check(self):
+        """skip_preflight=True (the --all delegation path) never calls check_repo_preflight."""
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.retrieve_key_and_iv.return_value = (b"\x00" * 32, b"\x01" * 16)
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+
+        self.manager.upgrade_scheme("secret", assume_yes=True, skip_preflight=True)
+
+        self.mock_preflight.assert_not_called()
+
+
+class TestUpgradeSchemeContent(unittest.TestCase):
+    """Content-verification and tree-restore behavior of upgrade_scheme, using
+    real crypto over real temp files rather than byte-level mocking - the
+    thing under test is whether the decrypted bytes survive the round trip."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+        mock_settings = MagicMock()
+        mock_settings.magic_header = "ENCRYPTED"
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = self.tmpdir
+        mock_settings.encryption_scheme = "v2"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+        self.aes_key = secrets.token_bytes(32)
+        self.iv = secrets.token_bytes(16)
+        self.key_manager.retrieve_key_and_iv.return_value = (self.aes_key, self.iv)
+        self.key_manager.get_scheme.return_value = "v1"
+
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+    def _write_v1_ciphertext(self, name, plaintext):
+        path = os.path.join(self.tmpdir, name)
+        v1_handler = AesEncryptionHandler(
+            aes_key=self.aes_key,
+            iv=self.iv,
+            magic_header=self.manager.magic_header,
+            scheme="v1",
+        )
+        with open(path, "wb") as fh:
+            fh.write(v1_handler.encrypt_data(plaintext))
+        return path
+
+    def _write_plaintext(self, name, plaintext):
+        path = os.path.join(self.tmpdir, name)
+        with open(path, "wb") as fh:
+            fh.write(plaintext)
+        return path
+
+    def test_happy_path_calls_set_scheme_once_after_both_checks(self):
+        path = self._write_v1_ciphertext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.key_manager.set_scheme.assert_called_once_with("secret", "v2")
+
+    def test_ciphertext_at_rest_ends_ciphertext(self):
+        path = self._write_v1_ciphertext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        with open(path, "rb") as fh:
+            content = fh.read()
+        self.assertTrue(content.startswith(self.manager.magic_header))
+
+    def test_success_path_never_uses_git_checkout(self):
+        """The success and abort restores must stay DIFFERENT: success must
+        leave the freshly re-encrypted v2 content in place (that content IS
+        the intended change to be committed), never revert it via `git
+        checkout` the way the abort path now does."""
+        path = self._write_v1_ciphertext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        with patch.object(
+            self.manager,
+            "_EncryptionManager__git_checkout_files",
+            side_effect=AssertionError("git checkout must not run on success"),
+        ):
+            self.manager.upgrade_scheme("secret", assume_yes=True)  # must not raise
+
+        self.key_manager.set_scheme.assert_called_once_with("secret", "v2")
+        with open(path, "rb") as fh:
+            content = fh.read()
+        self.assertTrue(content.startswith(self.manager.magic_header))
+
+    def test_plaintext_at_rest_ends_plaintext(self):
+        path = self._write_plaintext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.key_manager.set_scheme.assert_called_once_with("secret", "v2")
+        with open(path, "rb") as fh:
+            content = fh.read()
+        self.assertFalse(content.startswith(self.manager.magic_header))
+        self.assertEqual(content, b"super-secret-value")
+
+    def test_success_path_restore_failure_is_reported_as_error_not_ok(self):
+        """The scheme flip succeeding does not make the upgrade reportable as
+        ok if restoring the tree to plaintext afterward fails: this is a
+        successful upgrade with an incomplete restore, and both facts must
+        survive into the envelope - distinctly from a plain failure."""
+        path = self._write_plaintext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        real_decrypt_file = AesEncryptionHandler.decrypt_file
+        call_count = {"n": 0}
+
+        def flaky_decrypt_file(self_handler, file_path):
+            call_count["n"] += 1
+            # 1st call: the main re-encrypt loop's decrypt (succeeds, no-op
+            # on plaintext). 2nd call: the post-set_scheme restore attempt -
+            # this is the one that must fail without undoing the flip.
+            if call_count["n"] == 2:
+                raise IOError("disk full")
+            real_decrypt_file(self_handler, file_path)
+
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        stderr = io.StringIO()
+        self.manager.output = Output(json=True)
+
+        with patch.object(AesEncryptionHandler, "decrypt_file", flaky_decrypt_file):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        # Non-zero exit, never the plain-failure code either - an automated
+        # caller must not mistake this for "nothing to do" (0) or treat it
+        # exactly like a verify/content failure (1).
+        self.assertNotEqual(ctx.exception.code, 0)
+
+        # The scheme flip genuinely succeeded.
+        self.key_manager.set_scheme.assert_called_once_with("secret", "v2")
+
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload.get("scheme_flip_succeeded"))
+        self.assertIn(path, payload.get("restore_failed_files", []))
+
+        stderr_text = stderr.getvalue()
+        self.assertIn("v2", stderr_text)
+        self.assertIn("no-op", stderr_text)
+        self.assertIn("decrypt-files", stderr_text)
+
+    def test_content_mismatch_blocks_set_scheme_and_names_file(self):
+        """If the re-encrypted file's decrypted content differs from the
+        baseline, set_scheme must never be called and the error must name the
+        file - without ever printing the plaintext itself."""
+        path = self._write_v1_ciphertext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+
+        real_encrypt_file = AesEncryptionHandler.encrypt_file
+        call_count = {"n": 0}
+
+        def tampering_encrypt_file(self_handler, file_path):
+            # Re-encrypt normally, then simulate the migration itself losing
+            # content: overwrite with a validly-formatted v2 blob for
+            # DIFFERENT plaintext, so the version-byte check still passes and
+            # only the content checksum comparison can catch it.
+            real_encrypt_file(self_handler, file_path)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                tampered = self_handler.encrypt_data(b"different-content")
+                with open(file_path, "wb") as fh:
+                    fh.write(tampered)
+
+        with patch.object(AesEncryptionHandler, "encrypt_file", tampering_encrypt_file):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.key_manager.set_scheme.assert_not_called()
+        stderr_text = stderr.getvalue()
+        self.assertIn(path, stderr_text)
+        self.assertNotIn("super-secret-value", stderr_text)
+        self.assertNotIn("different-content", stderr_text)
+
+    def test_set_scheme_failure_restores_plaintext_tree_and_reports_error(self):
+        """set_scheme raising (e.g. no backend credentials) must not escape as
+        a traceback: the tree, found as plaintext, must be restored to
+        plaintext and the outcome reported as an error envelope."""
+        path = self._write_plaintext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+        self.key_manager.set_scheme.side_effect = AesKeyError("no backend credentials")
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        stderr_text = stderr.getvalue()
+        self.assertNotIn("Traceback", stderr_text)
+        self.assertIn("no backend credentials", stderr_text)
+
+        with open(path, "rb") as fh:
+            content = fh.read()
+        self.assertFalse(content.startswith(self.manager.magic_header))
+        self.assertEqual(content, b"super-secret-value")
+
+    def test_set_scheme_failure_leaves_ciphertext_tree_as_ciphertext(self):
+        """Found-as-ciphertext variant: after a set_scheme failure the tree
+        (already re-encrypted to v2 ciphertext by the loop) is left as
+        ciphertext, since that is the state it was found in."""
+        path = self._write_v1_ciphertext("a.txt", b"super-secret-value")
+        self.git_attributes_parser.get_files_for_filter.return_value = [path]
+        self.key_manager.set_scheme.side_effect = AesKeyError("no backend credentials")
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+        with open(path, "rb") as fh:
+            content = fh.read()
+        self.assertTrue(content.startswith(self.manager.magic_header))
+
+
+class TestUpgradeSchemeAbortRestoresCommittedBytes(unittest.TestCase):
+    """DEFECT A regression, run against a REAL git repo (this is the one
+    thing a tmpdir-without-git fixture cannot exercise, and the one thing
+    the old crypto-based abort restore got wrong).
+
+    Measured on a tree found as ciphertext - no filters configured in
+    .git/config, the service-olympus shape - the old abort restore called
+    the v2 handler's encrypt_file again, producing FRESH v2 ciphertext with
+    no committed blob behind it: `git status` showed the file modified, its
+    sha differed from HEAD, and the key blob was still v1 - a declared-
+    scheme-vs-stored-bytes divergence, reported as a clean abort and
+    committable. `git checkout -- <file>` is the only restore that cannot
+    diverge from the committed blob, because it returns exactly those
+    bytes."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+        subprocess.run(["git", "init", "-q"], cwd=self.tmpdir, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@example.com"],
+            cwd=self.tmpdir,
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.name", "T"], cwd=self.tmpdir, check=True)
+
+        mock_settings = MagicMock()
+        mock_settings.magic_header = "ENCRYPTED"
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = self.tmpdir
+        mock_settings.encryption_scheme = "v2"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+        self.aes_key = secrets.token_bytes(32)
+        self.iv = secrets.token_bytes(16)
+        self.key_manager.retrieve_key_and_iv.return_value = (self.aes_key, self.iv)
+        self.key_manager.get_scheme.return_value = "v1"
+
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+        # v1 ciphertext, committed - the "no filters configured in
+        # .git/config" / found-as-ciphertext shape.
+        self.path = os.path.join(self.tmpdir, "a.secret")
+        v1_handler = AesEncryptionHandler(
+            aes_key=self.aes_key,
+            iv=self.iv,
+            magic_header=self.manager.magic_header,
+            scheme="v1",
+        )
+        with open(self.path, "wb") as fh:
+            fh.write(v1_handler.encrypt_data(b"super-secret-value"))
+
+        subprocess.run(["git", "add", "a.secret"], cwd=self.tmpdir, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "secret"], cwd=self.tmpdir, check=True
+        )
+
+        self.git_attributes_parser.get_files_for_filter.return_value = [self.path]
+
+    def _head_blob_sha256(self):
+        result = subprocess.run(
+            ["git", "show", "HEAD:a.secret"],
+            cwd=self.tmpdir,
+            capture_output=True,
+            check=True,
+        )
+        return hashlib.sha256(result.stdout).hexdigest()
+
+    def test_abort_restores_tree_byte_identical_to_head(self):
+        real_encrypt_file = AesEncryptionHandler.encrypt_file
+        call_count = {"n": 0}
+
+        def tampering_encrypt_file(self_handler, file_path):
+            # Re-encrypt normally, then simulate content loss so the
+            # content-verification check aborts the run.
+            real_encrypt_file(self_handler, file_path)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                tampered = self_handler.encrypt_data(b"different-content")
+                with open(file_path, "wb") as fh:
+                    fh.write(tampered)
+
+        with patch.object(AesEncryptionHandler, "encrypt_file", tampering_encrypt_file):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme("secret", assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.key_manager.set_scheme.assert_not_called()
+
+        with open(self.path, "rb") as fh:
+            disk_bytes = fh.read()
+        self.assertEqual(
+            hashlib.sha256(disk_bytes).hexdigest(), self._head_blob_sha256()
+        )
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", "a.secret"],
+            cwd=self.tmpdir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(status.stdout.strip(), "")
+
+    def test_successful_checkout_is_never_second_guessed(self):
+        """A successful `git checkout` must be trusted, whatever at-rest state
+        it produces, and the crypto restore must not run after it.
+
+        An earlier version compared the post-checkout state against the found
+        state and fell back to the crypto restore on a mismatch. That
+        reintroduced the defect this class covers: on a checkout with filters
+        configured whose files nonetheless sat as ciphertext at rest, checkout
+        correctly smudges them to plaintext, the comparison reads that as a
+        mismatch, and the fallback re-encrypts to fresh v2 bytes under a v1
+        blob. Whatever checkout produces is the canonical state for that
+        checkout's configuration; a found state disagreeing with it was the
+        anomaly.
+        """
+        restore = self.manager._EncryptionManager__restore_on_abort
+        checkout = "_EncryptionManager__git_checkout_files"
+        crypto = "_EncryptionManager__restore_to_found_state"
+
+        # found_ciphertext is deliberately the OPPOSITE of what the file is left
+        # as, so a state comparison would read "mismatch" and fall back.
+        with open(self.path, "wb") as fh:
+            fh.write(b"plaintext-after-checkout")
+
+        with patch.object(self.manager, checkout, return_value=True) as mock_checkout:
+            with patch.object(self.manager, crypto) as mock_crypto:
+                failures = restore([self.path], MagicMock(), found_ciphertext=True)
+
+        mock_checkout.assert_called_once()
+        mock_crypto.assert_not_called()
+        self.assertEqual(failures, [])
+
+    def test_failed_checkout_falls_back_to_the_crypto_restore(self):
+        restore = self.manager._EncryptionManager__restore_on_abort
+        checkout = "_EncryptionManager__git_checkout_files"
+        crypto = "_EncryptionManager__restore_to_found_state"
+
+        with patch.object(self.manager, checkout, return_value=False):
+            with patch.object(self.manager, crypto, return_value=[]) as mock_crypto:
+                restore([self.path], MagicMock(), found_ciphertext=True)
+
+        mock_crypto.assert_called_once()
+
+
+class TestUpgradeSchemeAllSetSchemeFailure(unittest.TestCase):
+    """Regression coverage for the real-CLI defects found against a mixed
+    v1/v2 fixture: a set_scheme failure (no backend credentials) must not
+    escape --all as a traceback, must stop before the next filter, and must
+    restore the failed filter's already-re-encrypted file to the state it
+    was found in."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+        mock_settings = MagicMock()
+        mock_settings.magic_header = "ENCRYPTED"
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = self.tmpdir
+        mock_settings.encryption_scheme = "v2"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+        self.key_manager.retrieve_key_and_iv.return_value = (
+            secrets.token_bytes(32),
+            secrets.token_bytes(16),
+        )
+        self.key_manager.get_scheme.return_value = "v1"
+        self.key_manager.set_scheme.side_effect = AesKeyError("no backend credentials")
+
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+        # Sorted order runs "app-dev" before "app-prod-never-reached", so the
+        # failure on the first must stop the run before the second is ever
+        # touched.
+        self.git_attributes_parser.get_filter_names.return_value = [
+            "app-prod-never-reached",
+            "app-dev",
+        ]
+
+        self.dev_path = os.path.join(self.tmpdir, "secrets.auto.tfvars")
+        with open(self.dev_path, "wb") as fh:
+            fh.write(b"plaintext-secret-value")
+
+        self.other_path = os.path.join(self.tmpdir, "other.tfvars")
+        with open(self.other_path, "wb") as fh:
+            fh.write(b"other-plaintext")
+
+        def files_for_filter(name):
+            return [self.dev_path] if name == "app-dev" else [self.other_path]
+
+        self.git_attributes_parser.get_files_for_filter.side_effect = files_for_filter
+
+    def test_set_scheme_failure_reports_per_filter_and_stops_without_traceback(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme_all(assume_yes=True)
+
+        self.assertEqual(ctx.exception.code, 1)
+        stderr_text = stderr.getvalue()
+        self.assertNotIn("Traceback", stderr_text)
+        self.assertIn("app-dev", stderr_text)
+        self.assertIn("app-prod-never-reached", stderr_text)
+
+        # the never-reached filter's file must be untouched
+        with open(self.other_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"other-plaintext")
+
+        # the failed filter's file, found as plaintext, must be restored
+        with open(self.dev_path, "rb") as fh:
+            content = fh.read()
+        self.assertFalse(content.startswith(self.manager.magic_header))
+        self.assertEqual(content, b"plaintext-secret-value")
+
+
+class TestUpgradeSchemeAllRestoreIncomplete(unittest.TestCase):
+    """Regression coverage for the pre-PR review defect: a filter that
+    upgrades to v2 successfully but whose post-flip restore fails must stop
+    the --all run (the tree needs a human) and must be reported distinctly
+    from a plain upgrade failure - the first filter WAS upgraded."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+        mock_settings = MagicMock()
+        mock_settings.magic_header = "ENCRYPTED"
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = self.tmpdir
+        mock_settings.encryption_scheme = "v2"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+        self.key_manager.retrieve_key_and_iv.return_value = (
+            secrets.token_bytes(32),
+            secrets.token_bytes(16),
+        )
+        self.key_manager.get_scheme.return_value = "v1"
+        # set_scheme succeeds this time - the flip itself is fine.
+
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+        # Sorted order runs "filter-a" before "filter-b-never-reached".
+        self.git_attributes_parser.get_filter_names.return_value = [
+            "filter-b-never-reached",
+            "filter-a",
+        ]
+
+        self.a_path = os.path.join(self.tmpdir, "a.secret")
+        with open(self.a_path, "wb") as fh:
+            fh.write(b"plaintext-secret-value")
+
+        self.b_path = os.path.join(self.tmpdir, "b.secret")
+        with open(self.b_path, "wb") as fh:
+            fh.write(b"other-plaintext")
+
+        def files_for_filter(name):
+            return [self.a_path] if name == "filter-a" else [self.b_path]
+
+        self.git_attributes_parser.get_files_for_filter.side_effect = files_for_filter
+
+        # decrypt_file call #1 is the main re-encrypt loop for filter-a's one
+        # file (succeeds); call #2 is the post-flip restore attempt for that
+        # same file (fails). filter-b is never reached, so no further calls.
+        self._real_decrypt_file = AesEncryptionHandler.decrypt_file
+        self._call_count = {"n": 0}
+
+        def flaky_decrypt_file(self_handler, file_path):
+            self._call_count["n"] += 1
+            if self._call_count["n"] == 2:
+                raise IOError("disk full")
+            self._real_decrypt_file(self_handler, file_path)
+
+        self.decrypt_patcher = patch.object(
+            AesEncryptionHandler, "decrypt_file", flaky_decrypt_file
+        )
+        self.decrypt_patcher.start()
+        self.addCleanup(self.decrypt_patcher.stop)
+
+    def test_run_stops_filter_two_untouched_and_report_distinguishes_outcome(self):
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        stderr = io.StringIO()
+        self.manager.output = Output(json=True)
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                self.manager.upgrade_scheme_all(assume_yes=True)
+
+        # Not the plain-failure code, and not success.
+        self.assertNotEqual(ctx.exception.code, 0)
+        self.assertNotEqual(ctx.exception.code, 1)
+
+        # filter-a's scheme flip genuinely succeeded.
+        self.key_manager.set_scheme.assert_called_once_with("filter-a", "v2")
+
+        # filter-b was never attempted.
+        with open(self.b_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"other-plaintext")
+
+        # upgrade_scheme emits its own per-filter envelope first; the --all
+        # level envelope (the one asserted here) is the last line.
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        payload = json.loads(lines[-1])
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload.get("scheme_flip_succeeded"))
+        self.assertEqual(payload.get("restore_incomplete_filter"), "filter-a")
+        self.assertIn("filter-a", payload.get("upgraded", []))
+        self.assertIn("filter-b-never-reached", payload.get("not_attempted", []))
+        # Must not be describable as a plain failure.
+        self.assertNotIn("failed", payload)
+
+        stderr_text = stderr.getvalue()
+        self.assertIn("filter-a", stderr_text)
+        self.assertIn("filter-b-never-reached", stderr_text)
+        self.assertIn("not a failed upgrade", stderr_text)
+
+
+class TestUpgradeSchemeAll(unittest.TestCase):
+    """Tests for EncryptionManager.upgrade_scheme_all."""
+
+    @patch("git_secret_protector.services.encryption_manager.get_settings")
+    def setUp(self, mock_get_settings):
+        mock_settings = MagicMock()
+        mock_settings.magic_header = generate_random_string()
+        mock_settings.storage_type.value = "AWS_SSM"
+        mock_settings.module_name = "git-secret-protector"
+        mock_settings.base_dir = "/repo/root"
+        mock_settings.encryption_scheme = "v2"
+        mock_get_settings.return_value = mock_settings
+
+        self.git_attributes_parser = MagicMock(spec=GitAttributesParser)
+        self.key_manager = MagicMock()
+        self.key_rotator = MagicMock()
+        self.manager = EncryptionManager(
+            git_attributes_parser=self.git_attributes_parser,
+            key_manager=self.key_manager,
+            key_rotator=self.key_rotator,
+        )
+
+        self.preflight_patcher = patch(
+            "git_secret_protector.services.encryption_manager.check_repo_preflight",
+            return_value=[],
+        )
+        self.mock_preflight = self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+    def test_nothing_to_do_is_success_not_error(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["a", "b"]
+        self.key_manager.get_scheme.side_effect = lambda name: "v2"
+        from git_secret_protector.core.output import Output
+
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+
+        with contextlib.redirect_stdout(out):
+            self.manager.upgrade_scheme_all(assume_yes=True)
+
+        self.key_manager.set_scheme.assert_not_called()
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+
+    def test_mixed_filters_upgrades_only_v1_ones(self):
+        self.git_attributes_parser.get_filter_names.return_value = [
+            "v1filter",
+            "v2filter",
+        ]
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+        self.key_manager.get_scheme.side_effect = lambda name: (
+            "v1" if name == "v1filter" else "v2"
+        )
+
+        with patch.object(self.manager, "upgrade_scheme") as mock_upgrade:
+            self.manager.upgrade_scheme_all(assume_yes=True)
+
+        mock_upgrade.assert_called_once_with(
+            "v1filter", assume_yes=True, skip_preflight=True
+        )
+
+    def test_stops_on_first_failure_and_does_not_touch_later_filters(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["a", "b", "c"]
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+        self.key_manager.get_scheme.return_value = "v1"
+
+        def fake_upgrade(name, assume_yes=False, skip_preflight=False):
+            if name == "b":
+                sys.exit(1)
+
+        with patch.object(
+            self.manager, "upgrade_scheme", side_effect=fake_upgrade
+        ) as mock_upgrade:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit):
+                    self.manager.upgrade_scheme_all(assume_yes=True)
+
+        called_filters = [c.args[0] for c in mock_upgrade.call_args_list]
+        self.assertEqual(called_filters, ["a", "b"])  # never reached "c"
+        self.assertIn("c", stderr.getvalue())  # named as not attempted
+
+    def test_all_plus_filter_name_rejected_at_cli_layer(self):
+        # EncryptionManager.upgrade_scheme_all itself takes no filter name -
+        # the --all/filter_name contradiction is rejected in main.py before
+        # the manager is ever called. See test_main_cli.py.
+        self.assertFalse(hasattr(self.manager.upgrade_scheme_all, "filter_name"))
+
+    def test_preflight_refusal_blocks_before_any_filter_is_touched(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["a"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["x.txt"]
+        self.key_manager.get_scheme.return_value = "v1"
+        self.mock_preflight.return_value = ["matched file(s) are not tracked"]
+
+        with patch.object(self.manager, "upgrade_scheme") as mock_upgrade:
+            with self.assertRaises(SystemExit):
+                self.manager.upgrade_scheme_all(assume_yes=True)
+
+        mock_upgrade.assert_not_called()
+
+    def test_get_scheme_failure_during_enumeration_is_a_controlled_abort(self):
+        """DEFECT B regression: get_scheme(name) runs BEFORE the try/except
+        that wraps the upgrade loop, and for a repo where most filters have
+        no locally cached key (measured: 50 of 198 in the estate audit),
+        hitting the backend during enumeration is the NORMAL first action of
+        --all, not an edge case. A failure there must not escape as a raw
+        traceback - it must be reported, name the filter, say nothing was
+        touched, and exit non-zero."""
+        self.git_attributes_parser.get_filter_names.return_value = ["a", "b"]
+        self.key_manager.get_scheme.side_effect = AesKeyError(
+            "no cached key and backend unreachable"
+        )
+
+        with patch.object(self.manager, "upgrade_scheme") as mock_upgrade:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.upgrade_scheme_all(assume_yes=True)
+
+        self.assertNotEqual(ctx.exception.code, 0)
+        mock_upgrade.assert_not_called()
+        stderr_text = stderr.getvalue()
+        self.assertNotIn("Traceback", stderr_text)
+        self.assertIn("a", stderr_text)
+        self.assertIn("nothing was touched", stderr_text.lower())
+
+
+class TestUpgradeSchemeExitCodes(unittest.TestCase):
+    """The three outcomes of upgrade-scheme must stay distinguishable by exit code
+    alone, because that is how an automated caller tells them apart.
+
+    This pins the values rather than the behaviour: when the restore-incomplete code
+    was introduced it was set to 2, which argparse already uses for a usage error
+    (reachable here via `upgrade-scheme <filter> --all`). That made the most urgent
+    outcome - the migration half-landed and a working tree needs a human - read
+    identically to someone mistyping the flags. Changing it to 3 broke no test,
+    which is why this one exists.
+    """
+
+    def test_restore_incomplete_code_collides_with_nothing(self):
+        from git_secret_protector.services import encryption_manager as em
+
+        code = em._RESTORE_INCOMPLETE_EXIT_CODE
+        self.assertNotEqual(code, 0, "must not read as success")
+        self.assertNotEqual(code, 1, "must be distinguishable from a plain failure")
+        self.assertNotEqual(code, 2, "argparse uses 2 for a usage error")
+        self.assertGreater(code, 2)
+
+
+class TestRestoreToFoundStateJudgesDiskNotIntent(unittest.TestCase):
+    """The restore must judge each file by its CURRENT state on disk, never by
+    assuming the re-encrypt loop completed.
+
+    That loop decrypts and then re-encrypts each file in turn, so a failure
+    between those two writes leaves that one file as PLAINTEXT. An earlier
+    version returned early for a found-as-ciphertext tree on the reasoning that
+    such a tree is already where it started - true only of a completed loop. The
+    cost of the gap was plaintext secrets sitting in a repo that stores
+    ciphertext, reported as a clean abort and committable.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.handler = AesEncryptionHandler(
+            aes_key=os.urandom(32),
+            iv=os.urandom(16),
+            magic_header=b"ENCRYPTED",
+            scheme="v2",
+        )
+        self.manager = EncryptionManager(
+            git_attributes_parser=MagicMock(),
+            key_manager=MagicMock(),
+            key_rotator=MagicMock(),
+        )
+
+    def _write(self, name, body, encrypted):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            fh.write(body)
+        if encrypted:
+            self.handler.encrypt_file(path)
+        return path
+
+    def _restore(self, files, found_ciphertext):
+        return self.manager._EncryptionManager__restore_to_found_state(
+            files, self.handler, found_ciphertext
+        )
+
+    def _is_encrypted(self, path):
+        with open(path, "rb") as fh:
+            return fh.read(9) == b"ENCRYPTED"
+
+    def test_found_ciphertext_reencrypts_a_file_left_plaintext_mid_loop(self):
+        done = self._write("done.env", "A=1\n", encrypted=True)
+        interrupted = self._write("interrupted.env", "B=2\n", encrypted=False)
+
+        failures = self._restore([done, interrupted], found_ciphertext=True)
+
+        self.assertEqual(failures, [])
+        self.assertTrue(self._is_encrypted(done))
+        self.assertTrue(
+            self._is_encrypted(interrupted),
+            "a file left plaintext by an interrupted loop must be re-encrypted, "
+            "not silently left as readable secrets",
+        )
+
+    def test_found_plaintext_still_decrypts_back(self):
+        encrypted = self._write("secrets.env", "C=3\n", encrypted=True)
+
+        failures = self._restore([encrypted], found_ciphertext=False)
+
+        self.assertEqual(failures, [])
+        self.assertFalse(self._is_encrypted(encrypted))
+
+    def test_restore_failure_is_reported_not_raised(self):
+        missing = os.path.join(self.tmp, "gone.env")
+
+        failures = self._restore([missing], found_ciphertext=True)
+
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], missing)
 
 
 if __name__ == "__main__":
