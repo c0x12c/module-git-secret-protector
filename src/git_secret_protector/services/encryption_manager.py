@@ -585,9 +585,33 @@ class EncryptionManager:
     def upgrade_scheme_all(self, assume_yes: bool = False):
         filter_names = sorted(self.git_attributes_parser.get_filter_names())
 
+        # Enumeration itself can fail: get_scheme reads the key blob, which
+        # for an uncached filter means hitting the backend - and a repo's
+        # whole point is that most filters are NOT locally cached (measured:
+        # 50 of 198 sensitive filters in the estate audit have no local
+        # cache). That makes an uncached key the NORMAL first action of
+        # --all, not an edge case, so this gets the same controlled-abort
+        # handling as the upgrade loop itself: no traceback, name the
+        # filter, say plainly that nothing was touched yet (no file has been
+        # read or re-encrypted at this point), and stop.
         pending = []
         for name in filter_names:
-            scheme = self.key_manager.get_scheme(name)
+            try:
+                scheme = self.key_manager.get_scheme(name)
+            except Exception as e:
+                self.output.error(
+                    f"upgrade-scheme --all: could not read filter '{name}'s "
+                    f"scheme: {e}. Nothing was touched."
+                )
+                self.output.result(
+                    self._envelope_err(
+                        "upgrade-scheme",
+                        f"could not read filter '{name}'s scheme: {e}",
+                        filter="--all",
+                        failed_filter=name,
+                    )
+                )
+                sys.exit(1)
             if scheme == "v2":
                 self.output.info(f"Filter '{name}' is already on scheme v2; skipping.")
                 continue
@@ -1411,6 +1435,65 @@ class EncryptionManager:
                 failures.append((file, str(e)))
         return failures
 
+    def __git_checkout_files(self, files):
+        """`git checkout -- <files>`, never raising. Returns True on success.
+
+        Relies on every matched file being tracked - the untracked-file
+        preflight gate exists precisely so this is always viable on the
+        abort path, and pays for nothing if it is never used.
+        """
+        if not files:
+            return True
+        try:
+            result = subprocess.run(
+                ["git", "checkout", "--", *files],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    def __restore_on_abort(self, files, handler, found_ciphertext):
+        """Restore used ONLY on ABORT - deliberately different from the
+        success-path restore (__restore_to_found_state), which must leave
+        freshly re-encrypted v2 content in place because that IS the
+        intended change. On abort there is no intended change: the files
+        must come back exactly as committed.
+
+        `git checkout -- <files>` returns the exact committed bytes and, on
+        its own, lands the correct at-rest state in both shapes - where
+        filters are configured the smudge filter decrypts on checkout; where
+        they are not, the raw committed ciphertext comes back untouched. A
+        crypto-based re-encrypt of a found-as-ciphertext tree cannot do
+        this: it produces FRESH v2 bytes with no committed blob behind them,
+        diverging from a v1-declared blob - the declared-scheme-vs-stored-
+        bytes bug CLAUDE.md records for the 1.9.0 regression, now showing up
+        on the abort path instead. Falls back to the crypto-based restore,
+        with its existing per-file failure reporting, if checkout fails or
+        does not land the expected at-rest state - this is never assumed to
+        have worked.
+        """
+        if self.__git_checkout_files(files):
+            mismatched = [
+                f for f in files if self.__is_encrypted(f) != found_ciphertext
+            ]
+            if not mismatched:
+                return []
+            self.output.error(
+                f"upgrade-scheme: git checkout did not restore the expected "
+                f"at-rest state for {len(mismatched)} file(s); falling back "
+                f"to decrypt/encrypt-based restore."
+            )
+        else:
+            self.output.error(
+                "upgrade-scheme: git checkout failed while restoring the "
+                "working tree; falling back to decrypt/encrypt-based restore."
+            )
+        return self.__restore_to_found_state(files, handler, found_ciphertext)
+
     def __abort_upgrade(
         self, filter_name, files, handler, found_ciphertext, error, **fields
     ):
@@ -1420,9 +1503,7 @@ class EncryptionManager:
         it stays at v1 - recoverable - no matter which check failed.
         """
         self.output.error(f"upgrade-scheme: {error}")
-        restore_failures = self.__restore_to_found_state(
-            files, handler, found_ciphertext
-        )
+        restore_failures = self.__restore_on_abort(files, handler, found_ciphertext)
         if restore_failures:
             failed_paths = [f for f, _ in restore_failures]
             self.output.error(
