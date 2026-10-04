@@ -2010,6 +2010,48 @@ class TestUpgradeSchemeAbortRestoresCommittedBytes(unittest.TestCase):
         )
         self.assertEqual(status.stdout.strip(), "")
 
+    def test_successful_checkout_is_never_second_guessed(self):
+        """A successful `git checkout` must be trusted, whatever at-rest state
+        it produces, and the crypto restore must not run after it.
+
+        An earlier version compared the post-checkout state against the found
+        state and fell back to the crypto restore on a mismatch. That
+        reintroduced the defect this class covers: on a checkout with filters
+        configured whose files nonetheless sat as ciphertext at rest, checkout
+        correctly smudges them to plaintext, the comparison reads that as a
+        mismatch, and the fallback re-encrypts to fresh v2 bytes under a v1
+        blob. Whatever checkout produces is the canonical state for that
+        checkout's configuration; a found state disagreeing with it was the
+        anomaly.
+        """
+        restore = self.manager._EncryptionManager__restore_on_abort
+        checkout = "_EncryptionManager__git_checkout_files"
+        crypto = "_EncryptionManager__restore_to_found_state"
+
+        # found_ciphertext is deliberately the OPPOSITE of what the file is left
+        # as, so a state comparison would read "mismatch" and fall back.
+        with open(self.path, "wb") as fh:
+            fh.write(b"plaintext-after-checkout")
+
+        with patch.object(self.manager, checkout, return_value=True) as mock_checkout:
+            with patch.object(self.manager, crypto) as mock_crypto:
+                failures = restore([self.path], MagicMock(), found_ciphertext=True)
+
+        mock_checkout.assert_called_once()
+        mock_crypto.assert_not_called()
+        self.assertEqual(failures, [])
+
+    def test_failed_checkout_falls_back_to_the_crypto_restore(self):
+        restore = self.manager._EncryptionManager__restore_on_abort
+        checkout = "_EncryptionManager__git_checkout_files"
+        crypto = "_EncryptionManager__restore_to_found_state"
+
+        with patch.object(self.manager, checkout, return_value=False):
+            with patch.object(self.manager, crypto, return_value=[]) as mock_crypto:
+                restore([self.path], MagicMock(), found_ciphertext=True)
+
+        mock_crypto.assert_called_once()
+
 
 class TestUpgradeSchemeAllSetSchemeFailure(unittest.TestCase):
     """Regression coverage for the real-CLI defects found against a mixed

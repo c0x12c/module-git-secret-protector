@@ -32,6 +32,7 @@ opts out.
 
 ### Fixed
 - `scripts/migration/verify-upgrade-scheme.sh`: verifies an `upgrade-scheme` v1 to v2 migration did not change any file's decrypted content, comparing checksums before and after and restoring the working tree to plaintext. Dry-run by default. On a failed run it restores the tree from git rather than leaving ciphertext in place.
+- `verify-upgrade-scheme.sh` asks the key blob for the filter's scheme after an upgrade instead of scanning the working tree for a v2 version byte; the CLI now restores the tree to the state it was found in, so the old on-disk assertion failed on a successful upgrade.
 - `verify-upgrade-scheme.sh` refuses a detached HEAD or a branch behind its upstream, since re-encrypting from a stale checkout commits old secret content over current master, and restores the working tree to the state it was found in rather than unconditionally to plaintext.
 - `doctor`'s plaintext scan now compares the working tree against the committed blob instead of failing on every healthy decrypted file. A file that is plaintext on disk but ciphertext at HEAD is the normal smudged state and no longer fails; a file committed as plaintext still fails; a file not yet committed warns instead of failing.
 - A failing smudge (per-file `clean`/`smudge` filters and the `filter.<name>.process` protocol) now fails closed instead of writing ciphertext into the working tree as if it were plaintext content. A cold key cache still recovers with `git-secret-protector pull-aes-key <filter>`.

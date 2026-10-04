@@ -1471,27 +1471,29 @@ class EncryptionManager:
         this: it produces FRESH v2 bytes with no committed blob behind them,
         diverging from a v1-declared blob - the declared-scheme-vs-stored-
         bytes bug CLAUDE.md records for the 1.9.0 regression, now showing up
-        on the abort path instead. Falls back to the crypto-based restore,
-        with its existing per-file failure reporting, if checkout fails or
-        does not land the expected at-rest state - this is never assumed to
-        have worked.
+        on the abort path instead.
+
+        A SUCCESSFUL checkout is trusted, and deliberately NOT second-guessed
+        against the found at-rest state. An earlier version compared the two
+        and fell back to the crypto restore on a mismatch, which reintroduced
+        the very bug this method exists to fix: on a checkout with filters
+        configured whose files nonetheless sat as ciphertext at rest (someone
+        ran encrypt-files by hand), checkout correctly smudges them back to
+        plaintext, the comparison reads that as a mismatch, and the fallback
+        re-encrypts to fresh v2 bytes under a v1 blob. Measured, not reasoned
+        about. Whatever checkout produces IS the canonical state for that
+        checkout's configuration; a found state disagreeing with it was itself
+        the anomaly.
+
+        The crypto restore remains the fallback for the one case that needs
+        it: checkout itself failing.
         """
         if self.__git_checkout_files(files):
-            mismatched = [
-                f for f in files if self.__is_encrypted(f) != found_ciphertext
-            ]
-            if not mismatched:
-                return []
-            self.output.error(
-                f"upgrade-scheme: git checkout did not restore the expected "
-                f"at-rest state for {len(mismatched)} file(s); falling back "
-                f"to decrypt/encrypt-based restore."
-            )
-        else:
-            self.output.error(
-                "upgrade-scheme: git checkout failed while restoring the "
-                "working tree; falling back to decrypt/encrypt-based restore."
-            )
+            return []
+        self.output.error(
+            "upgrade-scheme: git checkout failed while restoring the "
+            "working tree; falling back to decrypt/encrypt-based restore."
+        )
         return self.__restore_to_found_state(files, handler, found_ciphertext)
 
     def __abort_upgrade(

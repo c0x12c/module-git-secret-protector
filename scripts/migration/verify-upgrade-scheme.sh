@@ -62,6 +62,21 @@ STATUS=$("$GSP" status --json 2>/dev/null) || die "status --json failed in $REPO
 
 read_status() { printf '%s' "$STATUS" | python3 "$@"; }
 
+# Re-queries the CLI rather than reusing $STATUS, which was captured before the
+# upgrade ran and would report the pre-upgrade scheme.
+read_status_fresh() {
+  "$GSP" status --json 2>/dev/null | python3 -c '
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for f in d.get("filters") or []:
+    if f.get("name") == sys.argv[1]:
+        print(f.get("scheme") or "unknown"); break
+' "$1"
+}
+
 FILTER_FOUND=$(read_status -c '
 import json,sys
 d = json.load(sys.stdin)
@@ -327,16 +342,29 @@ if ! "$GSP" upgrade-scheme "$FILTER" --yes; then
   die "upgrade-scheme failed for '$FILTER'; the key blob is flipped only after its own verify passes, so the filter should still be $SCHEME. Confirm with: $GSP status --json"
 fi
 
-printf '\n-- version byte check --\n'
+printf '\n-- scheme check --\n'
+# Asks the KEY BLOB what scheme the filter is on, not the bytes on disk.
+#
+# This used to scan each file for the v2 version byte in place. That assertion only
+# held while upgrade-scheme left ciphertext behind unconditionally. From the version
+# that restores the working tree to the state it was found in, a successful upgrade
+# of a found-as-plaintext tree ends with PLAINTEXT on disk - which this step read as
+# "NOT ENCRYPTED" for every file and failed on. A check that fails on success is
+# worse than no check: it teaches the operator to ignore the one tool standing
+# between them and a corrupted secret.
+#
+# The blob is the right thing to ask anyway. It is what the clean filter consults to
+# decide which scheme to write, and the CLI flips it only after its own per-file
+# verification passes - so blob == v2 means every file was confirmed v2 at the moment
+# it mattered. Works against both the pre- and post-restore CLI.
 BAD=0
-for f in "${FILES[@]}"; do
-  if [ "$(state_of "$f")" != ciphertext ]; then
-    printf 'NOT ENCRYPTED: %s\n' "$f"; BAD=$((BAD+1)); continue
-  fi
-  byte=$(dd if="$f" bs=1 skip=9 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
-  [ "$byte" = "2" ] || { printf 'NOT V2 (version byte=%s): %s\n' "${byte:-none}" "$f"; BAD=$((BAD+1)); }
-done
-[ "$BAD" -eq 0 ] && printf 'all %d file(s) carry the v2 version byte\n' "${#FILES[@]}"
+SCHEME_AFTER=$(read_status_fresh "$FILTER")
+if [ "$SCHEME_AFTER" = "v2" ]; then
+  printf 'filter %s is on scheme v2\n' "$FILTER"
+else
+  printf 'FILTER NOT ON V2 (scheme=%s)\n' "${SCHEME_AFTER:-unknown}"
+  BAD=1
+fi
 
 printf '\n-- restore the working tree to plaintext --\n'
 "$GSP" decrypt-files "$FILTER" || die "decrypt-files failed - the working tree still holds CIPHERTEXT. Do not run terraform or any app against this checkout until it is restored."
