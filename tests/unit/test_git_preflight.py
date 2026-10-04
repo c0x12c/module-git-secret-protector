@@ -26,6 +26,11 @@ class TestCheckRepoPreflight(unittest.TestCase):
             for key, result in responses:
                 if key in cmd:
                     return result
+            # The cleanliness probe runs on EVERY preflight, so answering it clean by
+            # default keeps each test about the one gate it names. A test that cares
+            # about cleanliness lists its own response above and wins by precedence.
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         return fake_run
@@ -61,6 +66,8 @@ class TestCheckRepoPreflight(unittest.TestCase):
                 return _cp(stdout="7\n")
             if "ls-files" in cmd:
                 return _cp(returncode=0)
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         mock_run.side_effect = fake_run
@@ -87,6 +94,8 @@ class TestCheckRepoPreflight(unittest.TestCase):
                 return _cp(returncode=1, stdout="")
             if "ls-files" in cmd:
                 return _cp(returncode=0)
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         mock_run.side_effect = fake_run
@@ -107,6 +116,8 @@ class TestCheckRepoPreflight(unittest.TestCase):
                 return _cp(returncode=1)
             if "ls-files" in cmd:
                 return _cp(returncode=0)
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         mock_run.side_effect = fake_run
@@ -127,6 +138,8 @@ class TestCheckRepoPreflight(unittest.TestCase):
             if "ls-files" in cmd:
                 # Untracked -> git ls-files --error-unmatch exits non-zero.
                 return _cp(returncode=1)
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         mock_run.side_effect = fake_run
@@ -152,6 +165,8 @@ class TestCheckRepoPreflight(unittest.TestCase):
                 return _cp(stdout="0\n")
             if "ls-files" in cmd:
                 return _cp(returncode=0)
+            if cmd[1] in ("update-index", "diff"):
+                return _cp()
             raise AssertionError(f"unexpected git call: {cmd}")
 
         mock_run.side_effect = fake_run
@@ -206,6 +221,48 @@ class TestCheckRepoPreflight(unittest.TestCase):
             self.assertEqual(check_repo_preflight([], cwd="/repo"), [])
         with patch.dict(os.environ, {"UPGRADE_SCHEME_MAX_BEHIND": "1"}, clear=False):
             self.assertTrue(check_repo_preflight([], cwd="/repo"))
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    def test_uncommitted_matched_file_is_refused(self, mock_run):
+        # The abort path restores with `git checkout`, which DISCARDS local edits.
+        # Measured before this gate existed: an uncommitted line added to a secret
+        # file was gone after an aborted run, with nothing reported. The shell
+        # harness this module was ported from carries the same gate; the port took
+        # the destructive restore without its precondition.
+        def fake_run(args, **kwargs):
+            argv = args[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)
+            if argv[:2] == ["diff", "--quiet"]:
+                return _cp("", returncode=1)
+            return _cp()
+
+        mock_run.side_effect = fake_run
+
+        refusals = check_repo_preflight(["a.secret"], cwd="/repo")
+
+        self.assertTrue(any("uncommitted" in r for r in refusals), refusals)
+        self.assertTrue(any("discard" in r for r in refusals), refusals)
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    def test_unreadable_index_fails_closed_on_cleanliness(self, mock_run):
+        def fake_run(args, **kwargs):
+            argv = args[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)
+            if argv[:1] == ["diff"]:
+                return _cp("", returncode=128)
+            return _cp()
+
+        mock_run.side_effect = fake_run
+
+        refusals = check_repo_preflight(["a.secret"], cwd="/repo")
+
+        self.assertTrue(any("cannot determine" in r for r in refusals), refusals)
 
 
 if __name__ == "__main__":

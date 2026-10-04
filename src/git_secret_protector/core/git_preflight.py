@@ -133,6 +133,32 @@ def check_repo_preflight(matched_files, cwd=None, max_behind=None):
                         "known to be irrelevant)."
                     )
 
+    # UNCOMMITTED CONTENT in a matched file is a hard refusal, because the abort
+    # path restores with `git checkout -- <files>` and that DISCARDS local edits
+    # irrecoverably. Measured: an uncommitted line added to a secret file was gone
+    # after an aborted run, with nothing reported. The shell harness this module was
+    # ported from carries the same gate for exactly this reason - the port took the
+    # destructive restore without its precondition.
+    #
+    # `git diff`, NOT `git status --porcelain`: on a tree whose files sit as
+    # ciphertext at rest, porcelain reports every matched file as modified while the
+    # bytes are identical to the committed blob and diff reports no change. Gating on
+    # porcelain would refuse to run on exactly the trees this is for.
+    _run_git(["update-index", "--refresh"], cwd)
+    for scope, label in ((["diff"], "uncommitted"), (["diff", "--cached"], "staged")):
+        probe = _run_git([*scope, "--quiet", "--", *matched_files], cwd)
+        if probe.returncode == 1:
+            refusals.append(
+                f"matched file(s) have {label} changes. The abort path restores with "
+                "`git checkout`, which would discard them. Commit or stash first."
+            )
+        elif probe.returncode > 1:
+            # Fail closed: an unreadable index is not evidence the tree is clean.
+            refusals.append(
+                f"cannot determine whether matched file(s) have {label} changes. "
+                "Refusing rather than assuming they are clean."
+            )
+
     # An untracked matched file has no committed blob to recover from, and
     # `git checkout -- <paths>` rejects the WHOLE pathspec if any element is
     # untracked - so the recovery path would silently do nothing for every
