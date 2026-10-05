@@ -38,6 +38,7 @@ opts out.
 - `verify-upgrade-scheme.sh` refuses a detached HEAD or a branch behind its upstream, since re-encrypting from a stale checkout commits old secret content over current master, and restores the working tree to the state it was found in rather than unconditionally to plaintext.
 - `doctor`'s plaintext scan now compares the working tree against the committed blob instead of failing on every healthy decrypted file. A file that is plaintext on disk but ciphertext at HEAD is the normal smudged state and no longer fails; a file committed as plaintext still fails; a file not yet committed warns instead of failing.
 - A failing smudge (per-file `clean`/`smudge` filters and the `filter.<name>.process` protocol) now fails closed instead of writing ciphertext into the working tree as if it were plaintext content. A cold key cache still recovers with `git-secret-protector pull-aes-key <filter>`.
+- `verify-upgrade-scheme.sh`'s clean-tree gate no longer refuses a tree whose only dirt is a scheme-mismatch artifact (a file committed under one encryption scheme while its key blob declares the other). It now decrypts both sides of a reported difference - mirroring `git_preflight.py`'s `check_repo_preflight` - and refuses only when the plaintext actually differs; a decrypt that yields nothing is treated as unable to compare, never as identical.
 
 ## [1.12.0] - 2026-09-29
 
