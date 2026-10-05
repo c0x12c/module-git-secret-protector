@@ -17,6 +17,12 @@ import subprocess
 DEFAULT_MAX_BEHIND = 0
 _GIT_TIMEOUT_SECS = 15
 
+# The only two modes a `git diff --raw` blob side can carry that this gate
+# treats as "a regular file, nothing mode-wise happened to it". Anything else
+# - 120000 (symlink) or 160000 (gitlink/submodule) in particular - is a type
+# change this gate must never wave through on plaintext equality alone.
+_REGULAR_BLOB_MODES = {"100644", "100755"}
+
 
 def _run_git(args, cwd):
     """subprocess.run wrapper that never raises - a failed git call becomes a
@@ -56,9 +62,42 @@ def _run_git_bytes(args, cwd):
         )
 
 
+def _relpath_for_git_show(path, cwd):
+    """Repo-relative path for a `git show :<path>` / `git show HEAD:<path>`
+    spec, or (None, reason) when one cannot be built.
+
+    The real caller (get_files_for_filter) hands this module ABSOLUTE paths.
+    `git show :/abs/path` is not a pathspec to git - a leading `:/` is its
+    COMMIT-MESSAGE SEARCH syntax - so an absolute path here makes the blob
+    read fail with exit 128 on every call, which reads as "cannot read the
+    indexed blob" and refuses a perfectly safe scheme-mismatch tree. Only the
+    blob-spec reads need this; the worktree file open and the plaintext_of
+    resolver keep the original path, since they already cope with it.
+    """
+    if not os.path.isabs(path):
+        # Already relative - nothing to rewrite, and rewriting it would
+        # re-resolve against the process's real cwd rather than the
+        # caller-supplied one (which in tests is often not a real directory).
+        return path, None
+    try:
+        rel = os.path.relpath(path, cwd)
+    except ValueError as e:
+        # Different drive on Windows - os.path.relpath cannot express it.
+        return None, f"cannot build a repo-relative path for git show: {e}"
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return (
+            None,
+            "path is outside the repo root, cannot build a git show spec for it",
+        )
+    return rel, None
+
+
 def _unstaged_bases(path, cwd):
     """(indexed_blob, worktree_bytes, error) for the unstaged comparison."""
-    indexed = _run_git_bytes(["show", f":{path}"], cwd)
+    rel, err = _relpath_for_git_show(path, cwd)
+    if err is not None:
+        return None, None, err
+    indexed = _run_git_bytes(["show", f":{rel}"], cwd)
     if indexed.returncode != 0:
         return None, None, "cannot read the indexed blob"
     try:
@@ -75,13 +114,43 @@ def _staged_bases(path, cwd):
     Deliberately never reads the worktree - a staged change is judged
     against what is in the index, not what is on disk.
     """
-    head = _run_git_bytes(["show", f"HEAD:{path}"], cwd)
+    rel, err = _relpath_for_git_show(path, cwd)
+    if err is not None:
+        return None, None, err
+    head = _run_git_bytes(["show", f"HEAD:{rel}"], cwd)
     if head.returncode != 0:
         return None, None, "cannot read the HEAD blob"
-    indexed = _run_git_bytes(["show", f":{path}"], cwd)
+    indexed = _run_git_bytes(["show", f":{rel}"], cwd)
     if indexed.returncode != 0:
         return None, None, "cannot read the indexed blob"
     return head.stdout, indexed.stdout, None
+
+
+def _diff_raw_modes(scope, path, cwd):
+    """(old_mode, new_mode) strings for one path in one diff scope, parsed
+    from `git diff --raw`, or None if the output could not be parsed.
+
+    Format: ":<oldmode> <newmode> <oldsha> <newsha> <status>\\t<path>". This
+    is the only way to tell a mode-only or type change (chmod, or regular
+    file <-> symlink) apart from a real content change - `git diff --quiet`
+    reports both as dirty, and a plaintext-equality check alone cannot see
+    the mode at all.
+    """
+    result = _run_git([*scope, "--raw", "--", path], cwd)
+    if result.returncode != 0:
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    header = line.split("\t", 1)[0]
+    parts = header.split()
+    if len(parts) < 2:
+        return None
+    old_mode = parts[0].lstrip(":")
+    new_mode = parts[1]
+    if not (old_mode.isdigit() and new_mode.isdigit()):
+        return None
+    return old_mode, new_mode
 
 
 def check_repo_preflight(
@@ -239,6 +308,7 @@ def check_repo_preflight(
         content_differs = []
         cannot_compare = []
         no_content_change = []
+        mode_or_type_changed = []
         for f in matched_files:
             file_probe = _run_git([*scope, "--quiet", "--", f], cwd)
             if file_probe.returncode == 0:
@@ -266,7 +336,24 @@ def check_repo_preflight(
                 hashlib.sha256(base_plain).digest()
                 == hashlib.sha256(other_plain).digest()
             ):
-                no_content_change.append(f)
+                # Equal plaintext is not proof nothing happened: `git diff
+                # --quiet` also reports dirty for a mode-only change (chmod)
+                # or a type change (regular file <-> symlink), and the abort
+                # path's `git checkout -- ` would reset that mode later and
+                # silently discard it if this were admitted.
+                modes = _diff_raw_modes(scope, f, cwd)
+                if modes is None:
+                    cannot_compare.append(
+                        (f, "cannot determine whether its mode or type changed")
+                    )
+                elif (
+                    modes[0] != modes[1]
+                    or modes[0] not in _REGULAR_BLOB_MODES
+                    or modes[1] not in _REGULAR_BLOB_MODES
+                ):
+                    mode_or_type_changed.append(f)
+                else:
+                    no_content_change.append(f)
             else:
                 content_differs.append(f)
 
@@ -284,6 +371,18 @@ def check_repo_preflight(
                 f"matched file(s) have {label} content changes. The abort path "
                 "restores with `git checkout`, which would discard them. Commit "
                 "or stash first: " + ", ".join(content_differs)
+            )
+        if mode_or_type_changed:
+            # Distinct from both other refusals: a plaintext-equal file whose
+            # mode or type changed (chmod, or regular file <-> symlink) is
+            # neither a content edit nor an unreadable comparison - it is a
+            # third thing the operator needs named so a chmod is what they
+            # go fix, not a scheme they go hunt for.
+            refusals.append(
+                f"matched file(s) have a {label} mode or type change (e.g. "
+                "chmod, or regular file <-> symlink), not a content change. "
+                "The abort path restores with `git checkout`, which would "
+                "discard it. Commit or stash first: " + ", ".join(mode_or_type_changed)
             )
         if no_content_change and notes is not None:
             notes.append(

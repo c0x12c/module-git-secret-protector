@@ -196,14 +196,6 @@ for f in "${FILES[@]}"; do
 done
 [ -z "$UNTRACKED" ] || die "matched file(s) are not tracked by git, so they have no committed blob to recover from:$UNTRACKED"
 
-git update-index --refresh >/dev/null 2>&1 || true
-if ! git diff --quiet -- "${FILES[@]}" 2>/dev/null; then
-  die "matched file(s) have uncommitted changes - commit or stash first"
-fi
-if ! git diff --cached --quiet -- "${FILES[@]}" 2>/dev/null; then
-  die "matched file(s) have staged changes - commit or unstage first"
-fi
-
 state_of() {
   # Header probe only. Reads 9 bytes, never the payload.
   if head -c 9 "$1" 2>/dev/null | grep -q ENCRYPTED; then echo ciphertext; else echo plaintext; fi
@@ -233,6 +225,162 @@ hash_of() {
     *) return 1 ;;
   esac
 }
+
+git update-index --refresh >/dev/null 2>&1 || true
+
+# "Dirty" and "has a content change" are not the same question: a file
+# committed under one scheme while its blob declares the other reads as
+# modified (git diff cleans the worktree through the CURRENT blob) with no
+# edit behind it. The batch check stays the cheap binary fast path; per-file
+# comparison - mirroring git_preflight.py's check_repo_preflight, and always
+# decrypting via "$GSP" rather than a shell reimplementation of the crypto, so
+# the two gates cannot disagree - runs only when the batch check finds dirt.
+GATE_WORK=$(mktemp -d) || die "cannot make a temp dir for the clean-tree content check"
+chmod 700 "$GATE_WORK"
+trap 'rm -rf "$GATE_WORK"' EXIT
+
+# $1=path $2=indexed|head|worktree $3=output file. Raw bytes, no text-mode
+# transform - command substitution would strip a trailing-newline-only edit.
+fetch_raw() {
+  case "$2" in
+    indexed)  git show ":$1" > "$3" 2>/dev/null ;;
+    head)     git show "HEAD:$1" > "$3" 2>/dev/null ;;
+    worktree) cat -- "$1" > "$3" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+# Always delegates - decrypt already header-guards with the CONFIGURED
+# magic_header and passes non-ciphertext through unchanged.
+decrypt_to_plaintext() {
+  "$GSP" decrypt "$3" < "$1" > "$2" 2>/dev/null || return 1
+  [ -s "$2" ] # two empty outputs would hash equal and ADMIT the file
+}
+
+GATE_CANNOT_COMPARE=()
+GATE_CONTENT_DIFFERS=()
+GATE_NO_CONTENT_CHANGE=()
+GATE_MODE_OR_TYPE_CHANGED=()
+
+# Checked against `git diff --raw`'s two mode fields. Anything else -
+# 120000 (symlink) or 160000 (gitlink/submodule) in particular - is a type
+# change this gate must never wave through on plaintext equality alone.
+_is_regular_blob_mode() {
+  case "$1" in
+    100644|100755) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1=path, remaining args are the scope's own diff flags (none, or --cached).
+# Equal plaintext does not prove nothing happened: `git diff --quiet` also
+# reports dirty for a mode-only change (chmod) or a type change (regular
+# file <-> symlink), and the failure path's `git checkout -- ` would reset
+# that mode later and silently discard it if this were admitted. Format:
+# ":<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>".
+gate_mode_changed() {
+  local f="$1"; shift
+  local raw old_mode new_mode
+  raw=$(git diff "$@" --raw -- "$f" 2>/dev/null)
+  [ -n "$raw" ] || return 2  # cannot parse - fail closed, never an admit
+  local header="${raw%%$'\t'*}"
+  old_mode=$(printf '%s\n' "$header" | awk '{print $1}')
+  old_mode="${old_mode#:}"
+  new_mode=$(printf '%s\n' "$header" | awk '{print $2}')
+  case "$old_mode" in ''|*[!0-9]*) return 2 ;; esac
+  case "$new_mode" in ''|*[!0-9]*) return 2 ;; esac
+  if [ "$old_mode" != "$new_mode" ]; then
+    return 0
+  fi
+  if ! _is_regular_blob_mode "$old_mode" || ! _is_regular_blob_mode "$new_mode"; then
+    return 0
+  fi
+  return 1
+}
+
+# $1=path $2=uncommitted|staged $3=base-which $4=other-which, remaining args
+# are the scope's own diff flags (none, or --cached) - needed again here to
+# probe the mode.
+gate_compare_file() {
+  local f="$1" label="$2" base_which="$3" other_which="$4"; shift 4
+  local base_raw="$GATE_WORK/base.raw" other_raw="$GATE_WORK/other.raw"
+  local base_plain="$GATE_WORK/base.plain" other_plain="$GATE_WORK/other.plain"
+  rm -f "$base_raw" "$other_raw" "$base_plain" "$other_plain"
+
+  fetch_raw "$f" "$base_which" "$base_raw" \
+    || { GATE_CANNOT_COMPARE+=("$f (cannot read the $base_which blob)"); return; }
+  fetch_raw "$f" "$other_which" "$other_raw" \
+    || { GATE_CANNOT_COMPARE+=("$f (cannot read the $other_which content)"); return; }
+  decrypt_to_plaintext "$base_raw" "$base_plain" "$f" \
+    || { GATE_CANNOT_COMPARE+=("$f ($base_which side could not be decrypted)"); return; }
+  decrypt_to_plaintext "$other_raw" "$other_plain" "$f" \
+    || { GATE_CANNOT_COMPARE+=("$f ($other_which side could not be decrypted)"); return; }
+
+  local bh oh
+  bh=$(hash_of "$base_plain") \
+    || { GATE_CANNOT_COMPARE+=("$f (cannot checksum $base_which plaintext)"); return; }
+  oh=$(hash_of "$other_plain") \
+    || { GATE_CANNOT_COMPARE+=("$f (cannot checksum $other_which plaintext)"); return; }
+
+  if [ "$bh" = "$oh" ]; then
+    gate_mode_changed "$f" "$@"
+    case "$?" in
+      0) GATE_MODE_OR_TYPE_CHANGED+=("$f ($label)") ;;
+      1) GATE_NO_CONTENT_CHANGE+=("$f ($label)") ;;
+      *) GATE_CANNOT_COMPARE+=("$f (cannot determine whether its mode or type changed)") ;;
+    esac
+  else
+    GATE_CONTENT_DIFFERS+=("$f ($label)")
+  fi
+}
+
+# Probes each file INDIVIDUALLY - not `--name-only`, which has path-quoting
+# edge cases - so a per-file failure stays per-file, same as git_preflight.py.
+gate_scope() {
+  local label="$1" base_which="$2" other_which="$3"; shift 3
+  git diff "$@" --quiet -- "${FILES[@]}" 2>/dev/null && return 0
+  local batch_rc=$?
+  if [ "$batch_rc" -gt 1 ]; then
+    GATE_CANNOT_COMPARE+=("all matched files ($label: cannot determine whether they changed)")
+    return
+  fi
+  local f file_rc
+  for f in "${FILES[@]}"; do
+    git diff "$@" --quiet -- "$f" 2>/dev/null && continue
+    file_rc=$?
+    if [ "$file_rc" -gt 1 ]; then
+      GATE_CANNOT_COMPARE+=("$f (cannot determine whether it changed)")
+      continue
+    fi
+    gate_compare_file "$f" "$label" "$base_which" "$other_which" "$@"
+  done
+}
+
+gate_scope uncommitted indexed worktree
+gate_scope staged head indexed --cached
+
+# Distinct messages: a misleading "you have uncommitted edits" when the real
+# cause is an uncached key, or the reverse, is this gate's own complaint again.
+if [ "${#GATE_CANNOT_COMPARE[@]}" -gt 0 ]; then
+  die "cannot compare plaintext for matched file(s), so refusing rather than assuming they are clean: $(printf '%s; ' "${GATE_CANNOT_COMPARE[@]}")"
+fi
+if [ "${#GATE_CONTENT_DIFFERS[@]}" -gt 0 ]; then
+  die "matched file(s) have content changes. The abort path restores with \`git checkout\`, which would discard them. Commit or stash first: $(printf '%s; ' "${GATE_CONTENT_DIFFERS[@]}")"
+fi
+if [ "${#GATE_MODE_OR_TYPE_CHANGED[@]}" -gt 0 ]; then
+  # Distinct from both other refusals: a plaintext-equal file whose mode or
+  # type changed (chmod, or regular file <-> symlink) is neither a content
+  # edit nor an unreadable comparison - it is a third thing the operator
+  # needs named so a chmod is what they go fix, not a scheme mismatch.
+  die "matched file(s) have a mode or type change (e.g. chmod, or regular file <-> symlink), not a content change. The abort path restores with \`git checkout\`, which would discard it. Commit or stash first: $(printf '%s; ' "${GATE_MODE_OR_TYPE_CHANGED[@]}")"
+fi
+if [ "${#GATE_NO_CONTENT_CHANGE[@]}" -gt 0 ]; then
+  printf 'tree is dirty but carries no content change for: %s- this is a scheme-mismatch artifact (committed under one encryption scheme while the key blob declares the other); upgrade-scheme repairs it, not an edit to commit or stash.\n' \
+    "$(printf '%s; ' "${GATE_NO_CONTENT_CHANGE[@]}")"
+fi
+
+rm -rf "$GATE_WORK"
+trap - EXIT
 
 record_hashes() { # $1 = output manifest
   local out="$1" f h
