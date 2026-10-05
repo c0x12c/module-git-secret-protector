@@ -58,7 +58,14 @@ cd "$REPO" || die "cannot cd $REPO"
 # own parser - never a reimplementation of the glob rules here. A second implementation
 # would disagree with the migration about which files are in scope, which is the one
 # thing this check cannot afford to get wrong.
-STATUS=$("$GSP" status --json 2>/dev/null) || die "status --json failed in $REPO"
+STATUS_ERR_FILE=$(mktemp) || die "cannot make a temp file for status stderr"
+STATUS=$("$GSP" status --json 2>"$STATUS_ERR_FILE")
+STATUS_RC=$?
+STATUS_ERR=$(cat "$STATUS_ERR_FILE" 2>/dev/null)
+rm -f "$STATUS_ERR_FILE"
+# status now exits non-zero on an unreadable scheme but still prints the payload,
+# so only an empty result is a hard failure here - unknown scheme is handled below.
+[ -n "$STATUS" ] || die "status --json failed in $REPO (exit $STATUS_RC): ${STATUS_ERR:-no output; likely an unreadable scheme or missing credentials}"
 
 read_status() { printf '%s' "$STATUS" | python3 "$@"; }
 
@@ -116,6 +123,8 @@ for f in d.get("filters") or []:
 else:
     print("unknown")
 ' "$FILTER")
+
+[ "$SCHEME" != "unknown" ] || die "filter '$FILTER' scheme could not be read; refusing to migrate blind (run '$GSP status' for the reason)"
 
 [ "${#FILES[@]}" -gt 0 ] || die "filter '$FILTER' matched no files in $REPO"
 

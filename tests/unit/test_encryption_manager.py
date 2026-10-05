@@ -333,6 +333,7 @@ class TestEncryptionManagerService(unittest.TestCase):
             "enc.txt",
             "plain.txt",
         ]
+        self.key_manager.get_scheme.return_value = "v2"
         out = io.StringIO()
         self.manager.output = Output(json=True)
         with patch.object(
@@ -1285,6 +1286,103 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertEqual(rc, 0)  # v1 warn must NOT fail doctor
         self.assertIn("[WARN]", out.getvalue())
         self.assertIn("v1", out.getvalue())
+
+    # ----- status/doctor: unknown scheme is reported as unknown, never rounded -----
+
+    def test_status_json_scheme_read_failure_reports_unknown_and_exits_nonzero(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.side_effect = AesKeyError("no credentials")
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.status()
+        self.assertNotEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        entry = payload["filters"][0]
+        self.assertEqual(entry["scheme"], "unknown")
+        self.assertIn("no credentials", entry["scheme_error"])
+
+    def test_status_human_scheme_read_failure_prints_reason_and_exits_nonzero(self):
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.side_effect = AesKeyError("no credentials")
+        out = io.StringIO()
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.manager.status()
+        self.assertNotEqual(ctx.exception.code, 0)
+        text = out.getvalue()
+        self.assertIn("scheme: unknown", text)
+        self.assertIn("no credentials", text)
+
+    def test_status_json_unrecognized_scheme_value_is_not_rounded_to_v2(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.return_value = "v3"
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["filters"][0]["scheme"], "v3")
+
+    def test_status_all_schemes_readable_exits_zero_regression_guard(self):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["enc.txt"]
+        self.key_manager.get_scheme.return_value = "v2"
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.status()  # must not raise SystemExit
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["filters"][0]["scheme"], "v2")
+
+    @patch("git_secret_protector.services.encryption_manager.subprocess.run")
+    def test_doctor_json_scheme_check_unrecognized_value_is_not_rounded_to_v2(
+        self, mock_run
+    ):
+        from git_secret_protector.core.output import Output
+
+        self.git_attributes_parser.get_filter_names.return_value = ["secret"]
+        self.git_attributes_parser.get_files_for_filter.return_value = ["a.txt"]
+        self.key_manager.is_cached.return_value = True
+        self.key_manager.resolve_parameter_name.return_value = "/path"
+        self.key_manager.get_scheme_info.return_value = ("v3", True)
+        mock_run.side_effect = [MagicMock(stdout="x\n"), MagicMock(stdout="y\n")]
+        out = io.StringIO()
+        self.manager.output = Output(json=True)
+        with patch("os.path.exists", return_value=True), patch.object(
+            self.manager, "_EncryptionManager__is_encrypted", return_value=True
+        ):
+            with contextlib.redirect_stdout(out):
+                self.manager.doctor()
+        payload = json.loads(out.getvalue())
+        scheme_checks = [c for c in payload["checks"] if c.get("check") == "scheme"]
+        self.assertEqual(len(scheme_checks), 1)
+        # Before the fix, rounding turned "v3" into "v2" and this check reported
+        # "ok" (authenticated scheme v2) - a false-positive for an unread scheme.
+        # The rounding gone, an unrecognized value must never produce "ok".
+        self.assertNotEqual(scheme_checks[0]["status"], "ok")
 
     # ----- end Task-6 tests -----
 

@@ -354,6 +354,8 @@ git-secret-protector doctor
 
 A filter using v1 is reported as `[WARN]` to prompt migration; a v2 filter reports `[ OK ]`.
 
+If a filter's scheme cannot be read (expired credentials, no network, an unreadable key blob), `status` reports it as `scheme: unknown` with the reason, and the command exits non-zero - the exit code is how a script can detect a degraded scheme read.
+
 ## Development
 
 ### Running Tests
