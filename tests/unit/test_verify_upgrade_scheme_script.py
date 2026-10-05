@@ -69,7 +69,7 @@ def _write_gsp_stub_empty_decrypt(path, real_gsp_path):
     os.chmod(path, 0o755)
 
 
-def _init_repo(workdir):
+def _init_repo(workdir, magic_header=None):
     _run(["git", "init", "-q"], cwd=workdir, check=True)
     _run(["git", "config", "user.email", "gate@example.com"], cwd=workdir, check=True)
     _run(["git", "config", "user.name", "gate"], cwd=workdir, check=True)
@@ -87,6 +87,8 @@ def _init_repo(workdir):
             "encryption_scheme = v2\n"
             "log_level = WARN\n"
         )
+        if magic_header is not None:
+            fh.write(f"magic_header = {magic_header}\n")
 
 
 def _write_key_blob(workdir, version):
@@ -179,6 +181,50 @@ def test_scheme_mismatch_with_identical_plaintext_passes():
         assert result.returncode == 0, combined
         assert "no content change" in combined
         assert "a.secret" in combined
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@pytest.mark.skipif(not GIT_AVAILABLE, reason="git is not available")
+def test_scheme_mismatch_with_custom_magic_header_passes():
+    """Case A2: same construction as case A, but a repo-configured custom
+    magic_header. The gate must not hardcode the default header - it must
+    delegate the ciphertext/plaintext judgment to `$GSP decrypt` itself,
+    which already uses the configured header."""
+    workdir = tempfile.mkdtemp()
+    try:
+        _init_repo(workdir, magic_header="SEALED")
+        gsp = os.path.join(workdir, "gsp-wrapper.sh")
+        _write_gsp_wrapper(gsp)
+        _configure_clean_smudge(workdir, gsp)
+
+        _write_key_blob(workdir, version=2)
+        secret_path = os.path.join(workdir, "d.secret")
+        with open(secret_path, "wb") as fh:
+            fh.write(b"identical-plaintext-content\n")
+        _run(["git", "add", "-A"], cwd=workdir, check=True)
+        _run(["git", "commit", "-q", "-m", "add secret"], cwd=workdir, check=True)
+
+        committed = _run(
+            ["git", "show", "HEAD:d.secret"], cwd=workdir, check=True
+        ).stdout
+        assert committed.startswith("SEALED"), "fixture did not commit ciphertext"
+
+        # Flip the blob to version-less (v1-era) AFTER commit: same bytes
+        # committed, different scheme now declared. No edit happened.
+        _write_key_blob(workdir, version=None)
+
+        os.utime(secret_path, None)
+        dirty_probe = _run(["git", "diff", "--quiet", "--", "d.secret"], cwd=workdir)
+        assert (
+            dirty_probe.returncode == 1
+        ), "fixture did not reproduce mismatch-as-dirty"
+
+        result = _run_script(workdir, gsp)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "no content change" in combined
+        assert "d.secret" in combined
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

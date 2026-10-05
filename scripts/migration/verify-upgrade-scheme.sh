@@ -250,20 +250,11 @@ fetch_raw() {
   esac
 }
 
-# $1=raw bytes file $2=plaintext output file $3=path (for filter lookup).
-# Header-probes $1 first (decrypt_stdin has no magic-header guard of its own)
-# then decrypts ciphertext via the real binary or copies plaintext as-is.
-# Result must be NON-EMPTY: decrypt_stdin exits 0 with ZERO BYTES on an
-# unresolved filter (a known fail-open bug) or empty stdin, and two empty
-# outputs would
-# otherwise hash equal and ADMIT the file.
+# Always delegates - decrypt already header-guards with the CONFIGURED
+# magic_header and passes non-ciphertext through unchanged.
 decrypt_to_plaintext() {
-  if [ "$(state_of "$1")" = ciphertext ]; then
-    "$GSP" decrypt "$3" < "$1" > "$2" 2>/dev/null || return 1
-  else
-    cp -- "$1" "$2" 2>/dev/null || return 1
-  fi
-  [ -s "$2" ]
+  "$GSP" decrypt "$3" < "$1" > "$2" 2>/dev/null || return 1
+  [ -s "$2" ] # two empty outputs would hash equal and ADMIT the file
 }
 
 GATE_CANNOT_COMPARE=()
