@@ -260,10 +260,49 @@ decrypt_to_plaintext() {
 GATE_CANNOT_COMPARE=()
 GATE_CONTENT_DIFFERS=()
 GATE_NO_CONTENT_CHANGE=()
+GATE_MODE_OR_TYPE_CHANGED=()
 
-# $1=path $2=uncommitted|staged $3=base-which $4=other-which
+# Checked against `git diff --raw`'s two mode fields. Anything else -
+# 120000 (symlink) or 160000 (gitlink/submodule) in particular - is a type
+# change this gate must never wave through on plaintext equality alone.
+_is_regular_blob_mode() {
+  case "$1" in
+    100644|100755) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1=path, remaining args are the scope's own diff flags (none, or --cached).
+# Equal plaintext does not prove nothing happened: `git diff --quiet` also
+# reports dirty for a mode-only change (chmod) or a type change (regular
+# file <-> symlink), and the failure path's `git checkout -- ` would reset
+# that mode later and silently discard it if this were admitted. Format:
+# ":<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>".
+gate_mode_changed() {
+  local f="$1"; shift
+  local raw old_mode new_mode
+  raw=$(git diff "$@" --raw -- "$f" 2>/dev/null)
+  [ -n "$raw" ] || return 2  # cannot parse - fail closed, never an admit
+  local header="${raw%%$'\t'*}"
+  old_mode=$(printf '%s\n' "$header" | awk '{print $1}')
+  old_mode="${old_mode#:}"
+  new_mode=$(printf '%s\n' "$header" | awk '{print $2}')
+  case "$old_mode" in ''|*[!0-9]*) return 2 ;; esac
+  case "$new_mode" in ''|*[!0-9]*) return 2 ;; esac
+  if [ "$old_mode" != "$new_mode" ]; then
+    return 0
+  fi
+  if ! _is_regular_blob_mode "$old_mode" || ! _is_regular_blob_mode "$new_mode"; then
+    return 0
+  fi
+  return 1
+}
+
+# $1=path $2=uncommitted|staged $3=base-which $4=other-which, remaining args
+# are the scope's own diff flags (none, or --cached) - needed again here to
+# probe the mode.
 gate_compare_file() {
-  local f="$1" label="$2" base_which="$3" other_which="$4"
+  local f="$1" label="$2" base_which="$3" other_which="$4"; shift 4
   local base_raw="$GATE_WORK/base.raw" other_raw="$GATE_WORK/other.raw"
   local base_plain="$GATE_WORK/base.plain" other_plain="$GATE_WORK/other.plain"
   rm -f "$base_raw" "$other_raw" "$base_plain" "$other_plain"
@@ -284,7 +323,12 @@ gate_compare_file() {
     || { GATE_CANNOT_COMPARE+=("$f (cannot checksum $other_which plaintext)"); return; }
 
   if [ "$bh" = "$oh" ]; then
-    GATE_NO_CONTENT_CHANGE+=("$f ($label)")
+    gate_mode_changed "$f" "$@"
+    case "$?" in
+      0) GATE_MODE_OR_TYPE_CHANGED+=("$f ($label)") ;;
+      1) GATE_NO_CONTENT_CHANGE+=("$f ($label)") ;;
+      *) GATE_CANNOT_COMPARE+=("$f (cannot determine whether its mode or type changed)") ;;
+    esac
   else
     GATE_CONTENT_DIFFERS+=("$f ($label)")
   fi
@@ -308,7 +352,7 @@ gate_scope() {
       GATE_CANNOT_COMPARE+=("$f (cannot determine whether it changed)")
       continue
     fi
-    gate_compare_file "$f" "$label" "$base_which" "$other_which"
+    gate_compare_file "$f" "$label" "$base_which" "$other_which" "$@"
   done
 }
 
@@ -322,6 +366,13 @@ if [ "${#GATE_CANNOT_COMPARE[@]}" -gt 0 ]; then
 fi
 if [ "${#GATE_CONTENT_DIFFERS[@]}" -gt 0 ]; then
   die "matched file(s) have content changes. The abort path restores with \`git checkout\`, which would discard them. Commit or stash first: $(printf '%s; ' "${GATE_CONTENT_DIFFERS[@]}")"
+fi
+if [ "${#GATE_MODE_OR_TYPE_CHANGED[@]}" -gt 0 ]; then
+  # Distinct from both other refusals: a plaintext-equal file whose mode or
+  # type changed (chmod, or regular file <-> symlink) is neither a content
+  # edit nor an unreadable comparison - it is a third thing the operator
+  # needs named so a chmod is what they go fix, not a scheme mismatch.
+  die "matched file(s) have a mode or type change (e.g. chmod, or regular file <-> symlink), not a content change. The abort path restores with \`git checkout\`, which would discard it. Commit or stash first: $(printf '%s; ' "${GATE_MODE_OR_TYPE_CHANGED[@]}")"
 fi
 if [ "${#GATE_NO_CONTENT_CHANGE[@]}" -gt 0 ]; then
   printf 'tree is dirty but carries no content change for: %s- this is a scheme-mismatch artifact (committed under one encryption scheme while the key blob declares the other); upgrade-scheme repairs it, not an edit to commit or stash.\n' \

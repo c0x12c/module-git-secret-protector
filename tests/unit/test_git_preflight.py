@@ -284,6 +284,16 @@ class TestCheckRepoPreflight(unittest.TestCase):
                 return _cp()
             if argv[:2] == ["diff", "--cached"]:
                 return _cp()  # nothing staged in these tests
+            if argv[:2] == ["diff", "--raw"]:
+                # Unchanged mode by default - these tests are about content,
+                # not mode; the dedicated chmod tests below supply their own.
+                path = argv[-1]
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout=f":100644 100644 38904f8 0000000 M\t{path}\n",
+                    stderr="",
+                )
             if argv[:1] == ["diff"]:
                 path = argv[-1]
                 return _cp(returncode=1 if path in dirty_unstaged else 0)
@@ -427,6 +437,121 @@ class TestCheckRepoPreflight(unittest.TestCase):
         )
 
         self.assertTrue(any("staged" in r and "a.secret" in r for r in refusals))
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    @patch("git_secret_protector.core.git_preflight.open")
+    def test_chmod_only_change_is_refused_not_admitted(self, mock_open, mock_run):
+        # Identical plaintext on both sides (a scheme-mismatch artifact) but
+        # the mode also changed (chmod +x). `git diff --quiet` cannot tell a
+        # mode-only change from a content change, and plaintext equality
+        # alone is not proof there was no real edit here - the mode IS the
+        # edit. Admitting this would let the abort path's `git checkout -- `
+        # silently reset the mode later, discarding it.
+        worktree_bytes = b"ciphertext-same-plaintext"
+
+        def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+            argv = cmd[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)  # no upstream configured
+            if argv[:1] == ["ls-files"]:
+                return _cp(returncode=0)  # tracked
+            if argv[:1] == ["update-index"]:
+                return _cp()
+            if argv[:2] == ["diff", "--cached"]:
+                return _cp()  # nothing staged
+            if argv[:2] == ["diff", "--raw"]:
+                # :<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout=":100644 100755 38904f8 0000000 M\ta.secret\n",
+                    stderr="",
+                )
+            if argv[:1] == ["diff"]:
+                return _cp(returncode=1)  # dirty, both batch and per-file probes
+            if argv[:2] == ["show", ":a.secret"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=worktree_bytes, stderr=b""
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        mock_run.side_effect = fake_run
+        mock_open.return_value.__enter__.return_value.read.return_value = worktree_bytes
+
+        def plaintext_of(path, data):
+            return b"same plaintext either way"
+
+        notes = []
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=notes
+        )
+
+        self.assertTrue(
+            any(("mode" in r or "type" in r) and "a.secret" in r for r in refusals),
+            refusals,
+        )
+        self.assertFalse(
+            any("content changes" in r for r in refusals),
+            "mode/type change must use its own wording, not content-changed",
+        )
+        self.assertFalse(
+            any("cannot compare" in r for r in refusals),
+            "mode/type change must use its own wording, not cannot-compare",
+        )
+        self.assertFalse(
+            notes, "a chmod-only change must not be noted as a safe no-op admit"
+        )
+
+    @patch("git_secret_protector.core.git_preflight.subprocess.run")
+    @patch("git_secret_protector.core.git_preflight.open")
+    def test_mode_equal_plaintext_equal_still_admits(self, mock_open, mock_run):
+        # Regression guard for the fix above: a scheme-mismatch artifact with
+        # UNCHANGED mode must still be admitted - the whole point of the
+        # content-aware gate.
+        worktree_bytes = b"ciphertext-same-plaintext"
+
+        def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+            argv = cmd[1:]
+            if argv[:1] == ["symbolic-ref"]:
+                return _cp("main\n")
+            if argv[:1] == ["config"]:
+                return _cp("", returncode=1)
+            if argv[:1] == ["ls-files"]:
+                return _cp(returncode=0)
+            if argv[:1] == ["update-index"]:
+                return _cp()
+            if argv[:2] == ["diff", "--cached"]:
+                return _cp()
+            if argv[:2] == ["diff", "--raw"]:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout=":100644 100644 38904f8 0000000 M\ta.secret\n",
+                    stderr="",
+                )
+            if argv[:1] == ["diff"]:
+                return _cp(returncode=1)
+            if argv[:2] == ["show", ":a.secret"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=worktree_bytes, stderr=b""
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        mock_run.side_effect = fake_run
+        mock_open.return_value.__enter__.return_value.read.return_value = worktree_bytes
+
+        def plaintext_of(path, data):
+            return b"same plaintext either way"
+
+        notes = []
+        refusals = check_repo_preflight(
+            ["a.secret"], cwd="/repo", plaintext_of=plaintext_of, notes=notes
+        )
+
+        self.assertEqual(refusals, [])
+        self.assertTrue(notes)
 
 
 if __name__ == "__main__":

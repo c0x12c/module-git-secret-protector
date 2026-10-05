@@ -230,6 +230,50 @@ def test_scheme_mismatch_with_custom_magic_header_passes():
 
 
 @pytest.mark.skipif(not GIT_AVAILABLE, reason="git is not available")
+def test_chmod_only_change_is_refused_not_admitted():
+    """Defect 2: identical plaintext (scheme-mismatch artifact) PLUS a mode
+    change (chmod +x) must refuse, naming the mode/type change - never admit
+    as no-content-change. Admitting it would let the failure-path `git
+    checkout -- ` later reset the mode and silently discard it."""
+    workdir = tempfile.mkdtemp()
+    try:
+        _init_repo(workdir)
+        gsp = os.path.join(workdir, "gsp-wrapper.sh")
+        _write_gsp_wrapper(gsp)
+        _configure_clean_smudge(workdir, gsp)
+
+        _write_key_blob(workdir, version=2)
+        secret_path = os.path.join(workdir, "e.secret")
+        with open(secret_path, "wb") as fh:
+            fh.write(b"identical-plaintext-content\n")
+        _run(["git", "add", "-A"], cwd=workdir, check=True)
+        _run(["git", "commit", "-q", "-m", "add secret"], cwd=workdir, check=True)
+
+        committed = _run(
+            ["git", "show", "HEAD:e.secret"], cwd=workdir, check=True
+        ).stdout
+        assert committed.startswith("ENCRYPTED"), "fixture did not commit ciphertext"
+
+        # Same scheme-mismatch construction as case A - no real content edit.
+        _write_key_blob(workdir, version=None)
+        os.chmod(secret_path, 0o755)
+        os.utime(secret_path, None)
+        dirty_probe = _run(["git", "diff", "--quiet", "--", "e.secret"], cwd=workdir)
+        assert dirty_probe.returncode == 1, "fixture did not reproduce dirty tree"
+
+        result = _run_script(workdir, gsp)
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0, combined
+        assert "mode" in combined or "type" in combined
+        assert "e.secret" in combined
+        # Must be its own refusal, distinct from both other outcomes.
+        assert "no content change" not in combined
+        assert "have content changes" not in combined
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@pytest.mark.skipif(not GIT_AVAILABLE, reason="git is not available")
 def test_real_uncommitted_edit_is_still_refused():
     """Case B: a genuine plaintext edit must still refuse, naming the path."""
     workdir = tempfile.mkdtemp()
