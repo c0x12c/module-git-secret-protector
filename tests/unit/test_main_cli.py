@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import subprocess
 import sys
@@ -37,6 +39,20 @@ def _init_git_repo(tmp_path):
     )
 
 
+def _write_local_key_cache(repo_path, filter_name):
+    # Gives status/doctor a scheme to read without touching the real AWS
+    # backend - these CLI-flag-parsing tests have nothing to do with scheme
+    # resolution and must not depend on network credentials to pass.
+    cache_dir = repo_path / ".git_secret_protector" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "aes_key": base64.b64encode(os.urandom(32)).decode("ascii"),
+        "iv": base64.b64encode(os.urandom(16)).decode("ascii"),
+        "version": 2,
+    }
+    (cache_dir / f"{filter_name}_key_iv.json").write_text(json.dumps(data))
+
+
 def test_status_outside_git_repo_exits_cleanly(tmp_path):
     result = _run_main(["status"], tmp_path)
 
@@ -72,6 +88,7 @@ def test_repo_root_before_subcommand_uses_override(tmp_path):
     _init_git_repo(repo_root)
     (repo_root / ".gitattributes").write_text("*.secret filter=secret\n")
     (repo_root / "example.secret").write_text("plain\n")
+    _write_local_key_cache(repo_root, "secret")
 
     result = _run_main(["--repo-root", str(repo_root), "status"], tmp_path)
 
@@ -147,9 +164,9 @@ def test_json_flag_after_subcommand_parses(tmp_path):
     repo.mkdir()
     _init_git_repo(repo)
     (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    _write_local_key_cache(repo, "secret")
     result = _run_main(["--repo-root", str(repo), "status", "--json"], tmp_path)
     assert result.returncode == 0
-    import json
 
     json.loads(result.stdout)  # stdout is a valid JSON document
 
@@ -160,6 +177,7 @@ def test_repo_root_after_subcommand_is_accepted(tmp_path):
     _init_git_repo(repo)
     (repo / ".gitattributes").write_text("*.secret filter=secret\n")
     (repo / "example.secret").write_text("plain\n")
+    _write_local_key_cache(repo, "secret")
 
     result = _run_main(["status", "--repo-root", str(repo)], tmp_path)
 
@@ -172,6 +190,7 @@ def test_quiet_after_subcommand_is_accepted(tmp_path):
     repo.mkdir()
     _init_git_repo(repo)
     (repo / ".gitattributes").write_text("*.secret filter=secret\n")
+    _write_local_key_cache(repo, "secret")
 
     # --repo-root before subcommand, --quiet after - both must parse
     result = _run_main(["--repo-root", str(repo), "status", "--quiet"], tmp_path)

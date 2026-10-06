@@ -58,7 +58,39 @@ cd "$REPO" || die "cannot cd $REPO"
 # own parser - never a reimplementation of the glob rules here. A second implementation
 # would disagree with the migration about which files are in scope, which is the one
 # thing this check cannot afford to get wrong.
-STATUS=$("$GSP" status --json 2>/dev/null) || die "status --json failed in $REPO"
+STATUS_ERR_FILE=$(mktemp) || die "cannot make a temp file for status stderr"
+STATUS=$("$GSP" status --json 2>"$STATUS_ERR_FILE")
+STATUS_RC=$?
+STATUS_ERR=$(cat "$STATUS_ERR_FILE" 2>/dev/null)
+rm -f "$STATUS_ERR_FILE"
+# status now exits non-zero on an unreadable scheme but still prints a payload
+# with a `filters` array in that case - that payload must be ACCEPTED here, not
+# treated as a failure, or the real cause gets masked by a "filter not defined"
+# diagnostic further down. But a hard failure (e.g. an unreadable .gitattributes)
+# also prints a non-empty `{"ok": false, "error": ...}` envelope with no `filters`
+# array at all - a merely-non-empty check accepts that too and misdiagnoses it.
+# So the payload is only accepted when it parses as JSON AND carries a `filters`
+# array; anything else dies here, surfacing the envelope's own `error` field when
+# present.
+STATUS_DIAG=$(printf '%s' "$STATUS" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    print("INVALID")
+    print("")
+    sys.exit(0)
+if isinstance(d, dict) and isinstance(d.get("filters"), list):
+    print("VALID")
+else:
+    print("INVALID")
+    err = d.get("error") if isinstance(d, dict) else None
+    print(err if err else "")
+' 2>/dev/null)
+STATUS_DIAG_KIND=$(printf '%s\n' "$STATUS_DIAG" | sed -n '1p')
+STATUS_DIAG_ERR=$(printf '%s\n' "$STATUS_DIAG" | sed -n '2p')
+
+[ "$STATUS_DIAG_KIND" = "VALID" ] || die "status --json failed in $REPO (exit $STATUS_RC): ${STATUS_DIAG_ERR:-${STATUS_ERR:-no output; likely an unreadable scheme or missing credentials}}"
 
 read_status() { printf '%s' "$STATUS" | python3 "$@"; }
 
@@ -116,6 +148,8 @@ for f in d.get("filters") or []:
 else:
     print("unknown")
 ' "$FILTER")
+
+[ "$SCHEME" != "unknown" ] || die "filter '$FILTER' scheme could not be read; refusing to migrate blind (run '$GSP status' for the reason)"
 
 [ "${#FILES[@]}" -gt 0 ] || die "filter '$FILTER' matched no files in $REPO"
 

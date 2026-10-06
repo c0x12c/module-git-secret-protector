@@ -858,35 +858,46 @@ class EncryptionManager:
                 "module_name": settings.module_name,
                 "filters": [],
             }
+            scheme_unknown = False
             for filter_name in filter_names:
                 files = self.git_attributes_parser.get_files_for_filter(filter_name)
                 file_entries = [
                     {"path": f, "encrypted": self.__is_encrypted(file_path=f)}
                     for f in files
                 ]
+                entry = {"name": filter_name, "files": file_entries}
                 try:
-                    scheme = self.key_manager.get_scheme(filter_name)
-                    if scheme not in ("v1", "v2"):
-                        scheme = "v2"
-                except Exception:
-                    scheme = "v2"
-                data["filters"].append(
-                    {"name": filter_name, "files": file_entries, "scheme": scheme}
-                )
+                    # Report whatever get_scheme actually returned - never round an
+                    # unrecognized value to v2. v2 means "already migrated, skip",
+                    # so rounding here is how a scheme read failure silently
+                    # under-counts the migration estate.
+                    entry["scheme"] = self.key_manager.get_scheme(filter_name)
+                except Exception as e:
+                    entry["scheme"] = "unknown"
+                    entry["scheme_error"] = str(e)
+                    scheme_unknown = True
+                data["filters"].append(entry)
 
             if self.output.json:
                 self.output.result(data)
+                if scheme_unknown:
+                    sys.exit(1)
                 return
 
             for entry in data["filters"]:
                 safe_print(f"Filter: {entry['name']}")
                 safe_print(f"  scheme: {entry['scheme']}")
+                if entry.get("scheme_error"):
+                    safe_print(f"  scheme_error: {entry['scheme_error']}")
                 if entry["files"]:
                     for f in entry["files"]:
                         status = "Encrypted" if f["encrypted"] else "⚠ PLAINTEXT"
                         safe_print(f"  {f['path']}: {status}")
                 else:
                     safe_print("  No files found for this filter.")
+
+            if scheme_unknown:
+                sys.exit(1)
         except Exception as e:
             if self.output.json:
                 self.output.result(self._envelope_err("status", str(e)))
@@ -1045,8 +1056,6 @@ class EncryptionManager:
         for filter_name in filter_names:
             try:
                 scheme, version_present = self.key_manager.get_scheme_info(filter_name)
-                if scheme not in ("v1", "v2"):
-                    scheme = "v2"
             except Exception as e:
                 checks.append(
                     {
