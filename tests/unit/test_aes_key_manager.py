@@ -503,6 +503,26 @@ class TestAesKeyManagerScheme(unittest.TestCase):
         # Should not have called store
         self.mock_storage_manager.store.assert_not_called()
 
+    def test_replace_key_and_iv_stores_the_given_key_material(self):
+        """Rotation re-encrypts files under this exact material before calling
+        here - the backend must be given the SAME bytes, never a fresh pair it
+        never used."""
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        given_key = secrets.token_bytes(32)
+        given_iv = secrets.token_bytes(16)
+
+        self.aes_key_manager.replace_key_and_iv(
+            filter_name, aes_key=given_key, iv=given_iv
+        )
+
+        stored_name, stored_json = self.mock_storage_manager.store.call_args[0]
+        stored_data = json.loads(stored_json)
+        self.assertEqual(base64.b64decode(stored_data["aes_key"]), given_key)
+        self.assertEqual(base64.b64decode(stored_data["iv"]), given_iv)
+
 
 if __name__ == "__main__":
     unittest.main()

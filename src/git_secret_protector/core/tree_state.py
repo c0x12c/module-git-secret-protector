@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import subprocess
 
@@ -34,6 +35,25 @@ def git_checkout_files(files, base_dir: str = None) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def plaintext_checksums(files, handler, magic_header: bytes):
+    """sha256 of each file's decrypted plaintext; never logs a byte.
+
+    A file at rest as ciphertext (magic-header guarded) is decrypted in
+    memory only - the file on disk is never touched here. A file at rest
+    as plaintext is hashed as-is. Safe to call before or after this run
+    has re-encrypted the files, since both states are self-describing via
+    the magic header.
+    """
+    hashes = {}
+    for file in files:
+        with open(file, "rb") as fh:
+            data = fh.read()
+        if data.startswith(magic_header):
+            data = handler.decrypt_data(data)
+        hashes[file] = hashlib.sha256(data).hexdigest()
+    return hashes
 
 
 def restore_to_found_state(files, handler, found_ciphertext: bool, magic_header: bytes):

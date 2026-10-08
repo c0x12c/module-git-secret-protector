@@ -1,82 +1,222 @@
+import base64
+import json
+import os
+import secrets
+import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
+from git_secret_protector.core.settings import StorageType
+from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
+from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 from git_secret_protector.services.key_rotator import KeyRotator
+
+MAGIC_HEADER = b"ENCRYPTED"
 
 
 class TestKeyRotator(unittest.TestCase):
-    @patch("git_secret_protector.services.key_rotator.get_settings")
-    def setUp(self, mock_get_settings):
-        mock_settings = MagicMock()
-        mock_settings.magic_header = "ENCRYPTED"
-        mock_get_settings.return_value = mock_settings
+    """Every test here uses a REAL AesKeyManager with only the storage backend
+    mocked, and exists=True (the realistic state once a filter has a key).
+    Mocking aes_key_manager wholesale, as the four tests this file replaces
+    did, proves nothing about the rotation flow itself.
+    """
 
-        self.aes_key_manager = MagicMock()
+    @patch("git_secret_protector.services.key_rotator.get_settings")
+    @patch("git_secret_protector.crypto.aes_key_manager.get_settings")
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def setUp(self, mock_create, mock_aes_get_settings, mock_rotator_get_settings):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_dir.cleanup)
+
+        mock_settings = MagicMock()
+        mock_settings.cache_dir = self.tmp_dir.name
+        mock_settings.module_name = secrets.token_hex(8)
+        mock_settings.storage_type = StorageType.AWS_SSM
+        mock_settings.magic_header = MAGIC_HEADER.decode()
+        mock_settings.base_dir = self.tmp_dir.name
+
+        mock_aes_get_settings.return_value = mock_settings
+        mock_rotator_get_settings.return_value = mock_settings
+
+        self.storage = MagicMock()
+        self.storage.parameter_name.return_value = "/enc/my-filter"
+        self.storage.exists.return_value = True
+        mock_create.return_value = self.storage
+
+        self.aes_key_manager = AesKeyManager()
+        # Pre-wire the storage manager directly: the @patch decorators on setUp
+        # only patch for the duration of setUp itself, not for the test methods
+        # that run afterward, so _get_storage_manager()'s lazy-create path must
+        # be bypassed the same way TestAesKeyManagerScheme does.
+        self.aes_key_manager.storage_manager = self.storage
         self.git_attributes_parser = MagicMock()
         self.rotator = KeyRotator(
             key_manager=self.aes_key_manager,
             git_attributes_parser=self.git_attributes_parser,
         )
 
-    @patch("git_secret_protector.services.key_rotator.AesEncryptionHandler")
-    def test_rotate_key_preserves_v1_scheme(self, mock_handler_cls):
-        """Rotating a v1 filter must NOT silently upgrade it to v2."""
-        current_key = b"current-key-bytes"
-        current_iv = b"current-iv-bytes"
-        new_key = b"new-key-bytes"
-        new_iv = b"new-iv-bytes"
-        files = ["secret.txt", "config.env"]
+    def _seed_backend_key(self, aes_key, iv, version=2):
+        data = {
+            "aes_key": base64.b64encode(aes_key).decode("utf-8"),
+            "iv": base64.b64encode(iv).decode("utf-8"),
+            "version": version,
+        }
+        self.storage.retrieve.return_value = json.dumps(data)
 
-        self.aes_key_manager.get_scheme.return_value = "v1"
-        self.aes_key_manager.retrieve_key_and_iv.side_effect = [
-            (current_key, current_iv),
-            (new_key, new_iv),
-        ]
-        self.git_attributes_parser.get_files_for_filter.return_value = files
+    def _write_encrypted_file(self, path, plaintext, aes_key, iv, scheme="v2"):
+        handler = AesEncryptionHandler(
+            aes_key=aes_key, iv=iv, magic_header=MAGIC_HEADER, scheme=scheme
+        )
+        with open(path, "wb") as f:
+            f.write(handler.encrypt_data(plaintext))
+
+    def test_rotation_completes_and_backend_holds_matching_key(self):
+        """The whole ticket in one test: rotation completes against a backend
+        whose parameter already exists, and the backend ends up holding the
+        key the files were ACTUALLY encrypted with."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        plaintext = b"super secret value"
+        self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
 
         self.rotator.rotate_key("my-filter")
 
-        # scheme read at the start
-        self.aes_key_manager.get_scheme.assert_called_once_with("my-filter")
+        self.storage.store.assert_called_once()
+        stored_name, stored_json = self.storage.store.call_args[0]
+        stored_data = json.loads(stored_json)
+        new_key = base64.b64decode(stored_data["aes_key"])
+        new_iv = base64.b64decode(stored_data["iv"])
 
-        # new key generated with preserved v1 scheme
-        self.aes_key_manager.setup_aes_key_and_iv.assert_called_once_with(
-            filter_name="my-filter", scheme="v1"
+        with open(file_path, "rb") as f:
+            on_disk = f.read()
+        verify_handler = AesEncryptionHandler(
+            aes_key=new_key, iv=new_iv, magic_header=MAGIC_HEADER, scheme="v2"
+        )
+        self.assertEqual(verify_handler.decrypt_data(on_disk), plaintext)
+
+    def test_reads_current_key_from_backend_not_stale_cache(self):
+        """force=True is load-bearing: retrieve_key_and_iv must be called with
+        force=True so a stale local cache is never the source of the key used
+        to decrypt the existing files."""
+        backend_key = secrets.token_bytes(32)
+        backend_iv = secrets.token_bytes(16)
+        self._seed_backend_key(backend_key, backend_iv, version=2)
+
+        stale_key = secrets.token_bytes(32)
+        stale_iv = secrets.token_bytes(16)
+        self.aes_key_manager.cache_key_iv_locally(
+            "my-filter",
+            json.dumps(
+                {
+                    "aes_key": base64.b64encode(stale_key).decode("utf-8"),
+                    "iv": base64.b64encode(stale_iv).decode("utf-8"),
+                    "version": 2,
+                }
+            ),
         )
 
-        # two AesEncryptionHandler instantiations: decrypt then encrypt
-        self.assertEqual(mock_handler_cls.call_count, 2)
-        decrypt_call, encrypt_call = mock_handler_cls.call_args_list
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        self._write_encrypted_file(file_path, b"value", backend_key, backend_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
 
-        # decrypt handler: no scheme override required (wire-byte-authoritative)
-        self.assertEqual(decrypt_call.kwargs.get("aes_key"), current_key)
-        self.assertEqual(decrypt_call.kwargs.get("iv"), current_iv)
+        with patch.object(
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            wraps=self.aes_key_manager.retrieve_key_and_iv,
+        ) as spy:
+            self.rotator.rotate_key("my-filter")
+            spy.assert_called_once_with(filter_name="my-filter", force=True)
 
-        # encrypt handler: must carry the preserved v1 scheme
-        self.assertEqual(encrypt_call.kwargs.get("aes_key"), new_key)
-        self.assertEqual(encrypt_call.kwargs.get("iv"), new_iv)
-        self.assertEqual(encrypt_call.kwargs.get("scheme"), "v1")
+        self.storage.store.assert_called_once()
 
-    @patch("git_secret_protector.services.key_rotator.AesEncryptionHandler")
-    def test_rotate_key_preserves_v2_scheme(self, mock_handler_cls):
-        """Rotating a v2 filter threads v2 through to the new key setup and encrypt handler."""
-        current_key = b"current-key"
-        current_iv = b"current-iv"
-        new_key = b"new-key"
-        new_iv = b"new-iv"
+    def test_scheme_preserved_from_refreshed_blob(self):
+        """A version-less local cache (legacy v1-shaped) must not decide the
+        scheme when the backend's blob - refreshed by step 1's force read -
+        says v2."""
+        backend_key = secrets.token_bytes(32)
+        backend_iv = secrets.token_bytes(16)
+        self._seed_backend_key(backend_key, backend_iv, version=2)
 
-        self.aes_key_manager.get_scheme.return_value = "v2"
-        self.aes_key_manager.retrieve_key_and_iv.side_effect = [
-            (current_key, current_iv),
-            (new_key, new_iv),
-        ]
-        self.git_attributes_parser.get_files_for_filter.return_value = ["file.txt"]
-
-        self.rotator.rotate_key("v2-filter")
-
-        self.aes_key_manager.setup_aes_key_and_iv.assert_called_once_with(
-            filter_name="v2-filter", scheme="v2"
+        self.aes_key_manager.cache_key_iv_locally(
+            "my-filter",
+            json.dumps(
+                {
+                    "aes_key": base64.b64encode(backend_key).decode("utf-8"),
+                    "iv": base64.b64encode(backend_iv).decode("utf-8"),
+                    # no "version" key - legacy, version-less cache entry
+                }
+            ),
         )
 
-        _, encrypt_call = mock_handler_cls.call_args_list
-        self.assertEqual(encrypt_call.kwargs.get("scheme"), "v2")
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        self._write_encrypted_file(
+            file_path, b"value", backend_key, backend_iv, scheme="v2"
+        )
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        self.rotator.rotate_key("my-filter")
+
+        stored_json = self.storage.store.call_args[0][1]
+        self.assertEqual(json.loads(stored_json)["version"], 2)
+
+    def test_transform_failure_leaves_backend_unchanged_and_restores(self):
+        """A failure during the per-file transform loop must never reach the
+        backend write, and must trigger the abort restore path."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file1 = os.path.join(self.tmp_dir.name, "a.txt")
+        file2 = os.path.join(self.tmp_dir.name, "b.txt")
+        self._write_encrypted_file(file1, b"one", old_key, old_iv)
+        self._write_encrypted_file(file2, b"two", old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file1, file2]
+
+        original_encrypt_data = AesEncryptionHandler.encrypt_data
+        calls = {"n": 0}
+
+        def flaky_encrypt_data(self_handler, data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated transform failure")
+            return original_encrypt_data(self_handler, data)
+
+        with patch.object(
+            AesEncryptionHandler, "encrypt_data", flaky_encrypt_data
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.restore_on_abort"
+        ) as mock_restore:
+            mock_restore.return_value = []
+            with self.assertRaises(Exception):
+                self.rotator.rotate_key("my-filter")
+            mock_restore.assert_called_once()
+
+        self.storage.store.assert_not_called()
+
+    def test_verify_mismatch_aborts_before_backend_write(self):
+        """A content-verify mismatch after the transform loop must abort
+        before the backend write, same as a transform failure."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        self._write_encrypted_file(file_path, b"value", old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        with patch(
+            "git_secret_protector.services.key_rotator.tree_state.plaintext_checksums",
+            side_effect=[{file_path: "before-hash"}, {file_path: "after-hash"}],
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.restore_on_abort"
+        ) as mock_restore:
+            mock_restore.return_value = []
+            with self.assertRaises(Exception):
+                self.rotator.rotate_key("my-filter")
+            mock_restore.assert_called_once()
+
+        self.storage.store.assert_not_called()

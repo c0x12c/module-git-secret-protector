@@ -32,13 +32,26 @@ class AesKeyManager:
             )
         return self.storage_manager
 
-    def _generate_and_store(self, filter_name: str, scheme: str, require_absent: bool):
-        """Generate a fresh AES key+IV, store to backend+cache. For both setup and replace paths.
+    def _generate_and_store(
+        self,
+        filter_name: str,
+        scheme: str,
+        require_absent: bool,
+        aes_key: bytes = None,
+        iv: bytes = None,
+    ):
+        """Generate (or accept) an AES key+IV, store to backend+cache. For both setup and replace paths.
 
         When require_absent=True, checks _parameter_exists and raises if found (setup path).
         When require_absent=False, skips the check entirely (replace path for rotation).
         Note: _parameter_exists returns False on ANY exception, so routing replace through it
         would add a fail-open branch with no benefit.
+
+        When BOTH aes_key and iv are supplied, those exact bytes are stored instead of
+        generating fresh ones - the caller (key rotation) has already re-encrypted the
+        working tree under this material, so the backend must end up holding the key
+        that actually matches the files on disk. When either is absent, fresh random
+        bytes are generated as before.
         """
         try:
             logger.info(
@@ -55,8 +68,9 @@ class AesKeyManager:
                     f"Parameter with name {parameter_name} already exists."
                 )
 
-            aes_key = os.urandom(self.AES_KEY_SIZE)
-            iv = os.urandom(self.IV_SIZE)
+            if aes_key is None or iv is None:
+                aes_key = os.urandom(self.AES_KEY_SIZE)
+                iv = os.urandom(self.IV_SIZE)
 
             data = {
                 "aes_key": base64.b64encode(s=aes_key).decode(encoding="utf-8"),
@@ -89,14 +103,28 @@ class AesKeyManager:
     def setup_aes_key_and_iv(self, filter_name: str, scheme: str = "v2"):
         self._generate_and_store(filter_name, scheme, require_absent=True)
 
-    def replace_key_and_iv(self, filter_name: str, scheme: str = "v2"):
-        """Replace an existing AES key+IV with a fresh one. Used by key rotation.
+    def replace_key_and_iv(
+        self,
+        filter_name: str,
+        scheme: str = "v2",
+        aes_key: bytes = None,
+        iv: bytes = None,
+    ):
+        """Replace an existing AES key+IV. Used by key rotation.
 
         Unlike setup_aes_key_and_iv, this does NOT consult _parameter_exists: the replace
         path targets an existing parameter by definition, and skipping the check eliminates
         a fail-open branch where _parameter_exists returns False on any exception.
+
+        When aes_key and iv are both given, those exact bytes are stored - the rotator
+        has already re-encrypted every matched file under this material before calling
+        here, so the backend must be given the SAME key, not a fresh one it never used.
+        Omitting them falls back to generating fresh random bytes (unused by rotation,
+        kept for any other caller that wants the old generate-fresh behaviour).
         """
-        self._generate_and_store(filter_name, scheme, require_absent=False)
+        self._generate_and_store(
+            filter_name, scheme, require_absent=False, aes_key=aes_key, iv=iv
+        )
 
     """
     Destroys the AES key and initialization vector (IV) associated with the given filter name.

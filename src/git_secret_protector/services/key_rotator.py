@@ -1,8 +1,11 @@
 import logging
+import os
 
 import injector
 
+from git_secret_protector.core import tree_state
 from git_secret_protector.core.git_attributes_parser import GitAttributesParser
+from git_secret_protector.core.output import Output
 from git_secret_protector.core.settings import get_settings
 from git_secret_protector.crypto.aes_encryption_handler import AesEncryptionHandler
 from git_secret_protector.crypto.aes_key_manager import AesKeyManager
@@ -10,65 +13,143 @@ from git_secret_protector.crypto.aes_key_manager import AesKeyManager
 logger = logging.getLogger(__name__)
 
 
+class _RotationAbort(Exception):
+    """Internal signal for a controlled rotate_key failure before the blob is
+    replaced (as opposed to an unexpected exception) - carries the envelope
+    fields rotate_keys should report alongside the restore outcome."""
+
+    def __init__(self, error, **fields):
+        super().__init__(error)
+        self.error = error
+        self.fields = fields
+
+
 class KeyRotator:
     @injector.inject
     def __init__(
-        self, key_manager: AesKeyManager, git_attributes_parser: GitAttributesParser
+        self,
+        key_manager: AesKeyManager,
+        git_attributes_parser: GitAttributesParser,
+        output: Output = None,
     ):
         self.aes_key_manager = key_manager
         self.git_attributes_parser = git_attributes_parser
-        self.magic_header = get_settings().magic_header.encode()
+        self.output = output if output is not None else Output()
+        settings = get_settings()
+        self.magic_header = settings.magic_header.encode()
+        self.base_dir = settings.base_dir
 
     def rotate_key(self, filter_name: str):
-        try:
-            logger.info("Starting key and IV rotation for filter: %s", filter_name)
+        logger.info("Starting key and IV rotation for filter: %s", filter_name)
 
-            # Step 1: Read the filter's scheme BEFORE any changes so rotation preserves it.
-            # A v1 filter must stay v1 after rotation; silently upgrading would break old clients.
-            scheme = self.aes_key_manager.get_scheme(filter_name)
+        # Step 1: Read the CURRENT key from the backend, not the cache - the cache can
+        # be stale, and since the magic header is not key-derived, a wrong-key v1
+        # decrypt below would yield garbage silently instead of raising.
+        old_key, old_iv = self.aes_key_manager.retrieve_key_and_iv(
+            filter_name=filter_name, force=True
+        )
 
-            # Step 1b: Retrieve the current AES key and IV
-            current_aes_key, current_iv = self.aes_key_manager.retrieve_key_and_iv(
-                filter_name=filter_name
-            )
+        # Step 2: Read the scheme now that the cache the read above refreshed is
+        # correct - rotation preserves whatever scheme the filter is on today.
+        scheme = self.aes_key_manager.get_scheme(filter_name)
 
-            # Step 2: Decrypt all files using the current AES key and IV.
-            # Decryption is version-byte-authoritative (dispatches on the file's wire bytes),
-            # so no scheme override is needed here.
-            files_to_re_encrypt = self.git_attributes_parser.get_files_for_filter(
-                filter_name=filter_name
-            )
+        files = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
 
-            decryption_manager = AesEncryptionHandler(
-                aes_key=current_aes_key, iv=current_iv, magic_header=self.magic_header
-            )
-            decryption_manager.decrypt_files(files=files_to_re_encrypt)
-
-            # Step 3: Generate and store a new AES key and IV, preserving the filter's scheme.
-            self.aes_key_manager.setup_aes_key_and_iv(
+        if not files:
+            # A filter with no matched files is legitimate - still rotate the key,
+            # there is nothing on disk to transform or verify.
+            self.aes_key_manager.replace_key_and_iv(
                 filter_name=filter_name, scheme=scheme
             )
-
-            # Step 4: Retrieve the new AES key and IV
-            new_aes_key, new_iv = self.aes_key_manager.retrieve_key_and_iv(
-                filter_name=filter_name
-            )
-
-            # Step 5: Encrypt all files using the new AES key and IV with the preserved scheme.
-            encryption_manager = AesEncryptionHandler(
-                aes_key=new_aes_key,
-                iv=new_iv,
-                magic_header=self.magic_header,
-                scheme=scheme,
-            )
-            encryption_manager.encrypt_files(files=files_to_re_encrypt)
-
             logger.info(
-                "Key and IV rotation and re-encryption complete for filter: %s",
+                "Key and IV rotation complete for filter: %s (no matched files)",
                 filter_name,
             )
-        except Exception as e:
-            logger.error(
-                "Failed to rotate key and IV for filter %s: %s", filter_name, e
+            return
+
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=self.magic_header
+        )
+
+        # Record, before touching anything, whether the tree was found at rest as
+        # plaintext or ciphertext, and a content baseline to verify against later.
+        found_ciphertext = any(
+            tree_state.is_encrypted(f, self.magic_header) for f in files
+        )
+        before = tree_state.plaintext_checksums(files, old_handler, self.magic_header)
+
+        # New key material generated IN MEMORY ONLY - nothing is stored until step 8
+        # below (replace_key_and_iv), once the re-encrypt is proven, not before.
+        new_key = os.urandom(AesKeyManager.AES_KEY_SIZE)
+        new_iv = os.urandom(AesKeyManager.IV_SIZE)
+        new_handler = AesEncryptionHandler(
+            aes_key=new_key, iv=new_iv, magic_header=self.magic_header, scheme=scheme
+        )
+
+        converted = []
+        try:
+            for file in files:
+                with open(file, "rb") as fh:
+                    data = fh.read()
+                if data.startswith(self.magic_header):
+                    data = old_handler.decrypt_data(data)
+                data = new_handler.encrypt_data(data)
+                with open(file, "wb") as fh:
+                    fh.write(data)
+                converted.append(file)
+
+            # Verify: re-read from disk and compare decrypted content against the
+            # baseline. Scoped honestly - both sides are the same scheme in one
+            # process, so this catches a truncated/failed write or a key mix-up,
+            # NOT an encryption defect.
+            after = tree_state.plaintext_checksums(
+                files, new_handler, self.magic_header
             )
-            raise
+            mismatched = sorted(f for f in files if before.get(f) != after.get(f))
+            if mismatched:
+                raise _RotationAbort(
+                    f"verify failed - decrypted content changed for "
+                    f"{len(mismatched)} file(s) after rotation: {mismatched}",
+                    mismatched_files=mismatched,
+                )
+        except Exception as e:
+            if not isinstance(e, _RotationAbort):
+                e = _RotationAbort(f"rotation failed before the key was replaced: {e}")
+            restore_failures = tree_state.restore_on_abort(
+                files,
+                new_handler,
+                found_ciphertext,
+                self.magic_header,
+                self.output.error,
+                base_dir=self.base_dir,
+            )
+            if restore_failures:
+                e.fields["restore_failed_files"] = [f for f, _ in restore_failures]
+            raise e
+
+        # The ONLY backend write, and only now that the re-encrypt is proven. After
+        # this the old key is unrecoverable - pass the EXACT material the files were
+        # just encrypted with, never a freshly generated one.
+        self.aes_key_manager.replace_key_and_iv(
+            filter_name=filter_name, scheme=scheme, aes_key=new_key, iv=new_iv
+        )
+
+        # Hand the tree back in the state it was found in.
+        restore_failures = tree_state.restore_to_found_state(
+            files, new_handler, found_ciphertext, self.magic_header
+        )
+        if restore_failures:
+            failed_paths = [f for f, _ in restore_failures]
+            raise _RotationAbort(
+                f"rotate-key: filter '{filter_name}' rotated successfully - the "
+                f"key blob IS rotated, and re-running rotation is wrong - but "
+                f"restoring the working tree failed for {len(failed_paths)} "
+                f"file(s): {failed_paths}",
+                rotation_succeeded=True,
+                restore_failed_files=failed_paths,
+            )
+
+        logger.info(
+            "Key and IV rotation and re-encryption complete for filter: %s",
+            filter_name,
+        )

@@ -1,5 +1,4 @@
 import configparser
-import hashlib
 import logging
 import os
 import subprocess
@@ -801,10 +800,38 @@ class EncryptionManager:
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
+            files = self.git_attributes_parser.get_files_for_filter(filter_name)
+
+            if files:
+                filter_map = {f: filter_name for f in files}
+                plaintext_of = self.__plaintext_of_resolver(filter_map)
+                notes = []
+                refusals = check_repo_preflight(
+                    files, cwd=self.base_dir, plaintext_of=plaintext_of, notes=notes
+                )
+                for note in notes:
+                    self.output.info(f"rotate-key: {note}")
+                if refusals:
+                    for refusal in refusals:
+                        self.output.error(f"rotate-key: refusing - {refusal}")
+                    self.output.result(
+                        self._envelope_err(
+                            "rotate-key",
+                            "preflight refused",
+                            filter=filter_name,
+                            refusals=refusals,
+                            notes=notes,
+                        )
+                    )
+                    sys.exit(1)
+
             if not assume_yes:
                 try:
                     answer = input(
-                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
+                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL "
+                        f"matched files. The current key becomes UNRECOVERABLE once "
+                        f"rotation writes the new one - any clone holding the old "
+                        f"cache must run pull-aes-key afterward. [y/N] "
                     )
                 except EOFError:
                     # No TTY (CI / piped stdin) and no explicit consent - treat as
@@ -823,8 +850,7 @@ class EncryptionManager:
                         )
                     )
                     return
-            rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
-            rotator.rotate_key(filter_name)
+            self.key_rotator.rotate_key(filter_name)
             logger.info("Key rotation complete for filter: %s", filter_name)
             msg = f"Key rotation complete for filter: {filter_name}"
             self.output.info(msg)
@@ -834,10 +860,25 @@ class EncryptionManager:
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
             self.output.error(f"Rotate keys command failed: {e}")
+            fields = dict(getattr(e, "fields", {}) or {})
+            if fields.get("rotation_succeeded"):
+                # The blob IS already rotated - this is a human follow-up on the
+                # WORKING TREE, not a failed rotation. Re-running would rotate again.
+                self.output.error(
+                    f"rotate-key: filter '{filter_name}' rotation succeeded - do "
+                    f"NOT re-run it - but restoring the working tree failed."
+                )
             self.output.result(
-                self._envelope_err("rotate-key", str(e), filter=filter_name)
+                self._envelope_err(
+                    "rotate-key",
+                    str(getattr(e, "error", e)),
+                    filter=filter_name,
+                    **fields,
+                )
             )
-            sys.exit(1)
+            sys.exit(
+                _RESTORE_INCOMPLETE_EXIT_CODE if fields.get("rotation_succeeded") else 1
+            )
 
     def clean_filter(self, filter_name: str):
         filter_name = self._require_filter(filter_name)
@@ -1454,22 +1495,7 @@ class EncryptionManager:
         return plaintext_of
 
     def __plaintext_checksums(self, files, handler):
-        """sha256 of each file's decrypted plaintext; never logs a byte.
-
-        A file at rest as ciphertext (magic-header guarded) is decrypted in
-        memory only - the file on disk is never touched here. A file at rest
-        as plaintext is hashed as-is. Safe to call before or after this run
-        has re-encrypted the files, since both states are self-describing via
-        the magic header.
-        """
-        hashes = {}
-        for file in files:
-            with open(file, "rb") as fh:
-                data = fh.read()
-            if data.startswith(self.magic_header):
-                data = handler.decrypt_data(data)
-            hashes[file] = hashlib.sha256(data).hexdigest()
-        return hashes
+        return tree_state.plaintext_checksums(files, handler, self.magic_header)
 
     def __restore_to_found_state(self, files, handler, found_ciphertext):
         return tree_state.restore_to_found_state(

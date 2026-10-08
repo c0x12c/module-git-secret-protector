@@ -325,23 +325,21 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertNotIn("Status command failed", stdout.getvalue())
         self.assertIn("Status command failed: boom", stderr.getvalue())
 
-    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
     @patch("builtins.input", return_value="n")
-    def test_rotate_keys_returns_on_negative_confirmation(
-        self, mock_input, mock_key_rotator
-    ):
+    def test_rotate_keys_returns_on_negative_confirmation(self, mock_input):
+        self.git_attributes_parser.get_files_for_filter.return_value = []
         stderr = io.StringIO()
 
         with contextlib.redirect_stderr(stderr):
             self.manager.rotate_keys("secret")
 
         mock_input.assert_called_once()
-        mock_key_rotator.assert_not_called()
+        self.key_rotator.rotate_key.assert_not_called()
         self.assertIn("Aborted", stderr.getvalue())
 
-    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
     @patch("builtins.input", side_effect=EOFError)
-    def test_rotate_keys_aborts_cleanly_on_eof(self, mock_input, mock_key_rotator):
+    def test_rotate_keys_aborts_cleanly_on_eof(self, mock_input):
+        self.git_attributes_parser.get_files_for_filter.return_value = []
         stderr = io.StringIO()
 
         with contextlib.redirect_stderr(stderr):
@@ -349,33 +347,27 @@ class TestEncryptionManagerService(unittest.TestCase):
             self.manager.rotate_keys("secret")
 
         mock_input.assert_called_once()
-        mock_key_rotator.assert_not_called()
+        self.key_rotator.rotate_key.assert_not_called()
         self.assertIn("Aborted", stderr.getvalue())
         self.assertNotIn("Rotate keys command failed", stderr.getvalue())
 
-    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
     @patch("builtins.input", return_value="y")
-    def test_rotate_keys_proceeds_on_positive_confirmation(
-        self, mock_input, mock_key_rotator
-    ):
-        rotator = mock_key_rotator.return_value
+    def test_rotate_keys_proceeds_on_positive_confirmation(self, mock_input):
+        self.git_attributes_parser.get_files_for_filter.return_value = []
 
         self.manager.rotate_keys("secret")
 
         mock_input.assert_called_once()
-        rotator.rotate_key.assert_called_once_with("secret")
+        self.key_rotator.rotate_key.assert_called_once_with("secret")
 
-    @patch("git_secret_protector.services.encryption_manager.KeyRotator")
     @patch("builtins.input", side_effect=AssertionError("input should not be called"))
-    def test_rotate_keys_assume_yes_skips_confirmation(
-        self, mock_input, mock_key_rotator
-    ):
-        rotator = mock_key_rotator.return_value
+    def test_rotate_keys_assume_yes_skips_confirmation(self, mock_input):
+        self.git_attributes_parser.get_files_for_filter.return_value = []
 
         self.manager.rotate_keys("secret", assume_yes=True)
 
         mock_input.assert_not_called()
-        rotator.rotate_key.assert_called_once_with("secret")
+        self.key_rotator.rotate_key.assert_called_once_with("secret")
 
     def test_status_json_schema(self):
         from git_secret_protector.core.output import Output
