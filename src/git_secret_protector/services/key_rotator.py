@@ -55,18 +55,6 @@ class KeyRotator:
 
         files = self.git_attributes_parser.get_files_for_filter(filter_name=filter_name)
 
-        if not files:
-            # A filter with no matched files is legitimate - still rotate the key,
-            # there is nothing on disk to transform or verify.
-            self.aes_key_manager.replace_key_and_iv(
-                filter_name=filter_name, scheme=scheme
-            )
-            logger.info(
-                "Key and IV rotation complete for filter: %s (no matched files)",
-                filter_name,
-            )
-            return
-
         # Handler scheme defaults to v2, but decryption is version-byte-authoritative
         # so this was only caught by the abort fallback re-encrypting with the wrong scheme.
         old_handler = AesEncryptionHandler(
@@ -155,6 +143,24 @@ class KeyRotator:
                     f"{len(mismatched)} file(s) after rotation: {mismatched}",
                     mismatched_files=mismatched,
                 )
+
+            # F1: Narrow the race window - re-read the backend key immediately before
+            # the write to detect concurrent rotations that landed while this one was
+            # running. True compare-and-swap is a separate design task; this just makes
+            # the window smaller at minimal cost.
+            current_key, _ = self.aes_key_manager.retrieve_key_and_iv(
+                filter_name=filter_name, force=True
+            )
+            if current_key != old_key:
+                # Pre-write race: blob was not touched, so state is known (False).
+                # Post-write backend-read failures keep None (genuinely unknown).
+                raise _RotationAbort(
+                    f"rotate-key: filter '{filter_name}' key changed under us "
+                    f"(another rotation or setup-aes-key landed while this one was "
+                    f"running). Recovery: run `git-secret-protector pull-aes-key "
+                    f"{filter_name}` to re-sync, then retry rotation.",
+                    rotation_succeeded=False,
+                )
         except Exception as e:
             if not isinstance(e, _RotationAbort):
                 e = _RotationAbort(f"rotation failed before the key was replaced: {e}")
@@ -167,6 +173,7 @@ class KeyRotator:
                 self.output.error,
                 base_dir=self.base_dir,
                 restore=restore_converted_files,
+                operation="rotate-key",
             )
             if restore_failures:
                 e.fields["restore_failed_files"] = [f for f, _ in restore_failures]
@@ -175,6 +182,7 @@ class KeyRotator:
         # The ONLY backend write, and only now that the re-encrypt is proven. After
         # this the old key is unrecoverable - pass the EXACT material the files were
         # just encrypted with, never a freshly generated one.
+
         try:
             self.aes_key_manager.replace_key_and_iv(
                 filter_name=filter_name, scheme=scheme, aes_key=new_key, iv=new_iv
@@ -230,6 +238,7 @@ class KeyRotator:
                     self.output.error,
                     base_dir=self.base_dir,
                     restore=restore_converted_files,
+                    operation="rotate-key",
                 )
                 raise _RotationAbort(
                     f"rotate-key: filter '{filter_name}' key blob was NOT replaced - "

@@ -101,7 +101,7 @@ class TestKeyRotator(unittest.TestCase):
     def test_reads_current_key_from_backend_not_stale_cache(self):
         """force=True is load-bearing: retrieve_key_and_iv must be called with
         force=True so a stale local cache is never the source of the key used
-        to decrypt the existing files."""
+        to decrypt the existing files. The pre-write F1 check adds a second call."""
         backend_key = secrets.token_bytes(32)
         backend_iv = secrets.token_bytes(16)
         self._seed_backend_key(backend_key, backend_iv, version=2)
@@ -129,7 +129,11 @@ class TestKeyRotator(unittest.TestCase):
             wraps=self.aes_key_manager.retrieve_key_and_iv,
         ) as spy:
             self.rotator.rotate_key("my-filter")
-            spy.assert_called_once_with(filter_name="my-filter", force=True)
+            self.assertEqual(spy.call_count, 2)
+            for call in spy.call_args_list:
+                self.assertEqual(
+                    call, unittest.mock.call(filter_name="my-filter", force=True)
+                )
 
         self.storage.store.assert_called_once()
 
@@ -285,7 +289,7 @@ class TestKeyRotator(unittest.TestCase):
 
         def retrieve_with_state(*args, **kwargs):
             retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] == 1:
+            if retrieve_call_count["n"] <= 2:
                 return old_key, old_iv
             return captured_keys["new_key"], captured_keys["new_iv"]
 
@@ -373,7 +377,7 @@ class TestKeyRotator(unittest.TestCase):
 
         def retrieve_first_succeeds_then_fails(*args, **kwargs):
             retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] == 1:
+            if retrieve_call_count["n"] <= 2:
                 return old_key, old_iv
             raise RuntimeError("backend unreachable")
 
@@ -530,3 +534,129 @@ class TestKeyRotator(unittest.TestCase):
 
         decrypted1 = old_handler.decrypt_data(restored_bytes)
         self.assertEqual(decrypted1, plaintext1)
+
+    def test_rotation_aborts_when_the_stored_key_changed_underneath(self):
+        """F1: A concurrent rotation that lands while this one is running must
+        abort before the blob write, with a message naming the race and pointing
+        to recovery. The pre-write re-read catches this."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        plaintext = b"test data"
+        self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        retrieve_call_count = {"n": 0}
+        different_key = secrets.token_bytes(32)
+
+        def retrieve_different_on_prewrite_check(*args, **kwargs):
+            retrieve_call_count["n"] += 1
+            if retrieve_call_count["n"] == 1:
+                return old_key, old_iv
+            return different_key, old_iv
+
+        with patch.object(
+            self.aes_key_manager,
+            "replace_key_and_iv",
+        ) as mock_replace, patch.object(
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            side_effect=retrieve_different_on_prewrite_check,
+        ):
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+
+        # Assert: replace_key_and_iv was never called
+        mock_replace.assert_not_called()
+
+        # Assert: error message mentions the race condition
+        error_msg = str(ctx.exception)
+        self.assertIn("key changed under us", error_msg)
+        self.assertIn("pull-aes-key", error_msg)
+
+        # Assert: rotation_succeeded is False (blob was not touched, state is known)
+        self.assertIs(ctx.exception.fields.get("rotation_succeeded"), False)
+
+        # Assert: plaintext can still be decrypted with old key (restore worked)
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=MAGIC_HEADER
+        )
+        with open(file_path, "rb") as f:
+            decrypted = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted, plaintext)
+
+    def test_empty_file_list_blob_write_failure_is_discriminated(self):
+        """F2: When a filter has no matched files, the blob write must still go
+        through the guarded path so that a write failure is discriminated. If the
+        backend succeeds but the cache write fails, rotation_succeeded must be True."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+
+        captured_keys = {"new_key": None, "new_iv": None}
+        retrieve_call_count = {"n": 0}
+
+        def retrieve_returns_captured_key_on_post_write_check(*args, **kwargs):
+            retrieve_call_count["n"] += 1
+            if retrieve_call_count["n"] <= 2:
+                return old_key, old_iv
+            return captured_keys["new_key"], captured_keys["new_iv"]
+
+        def failing_replace(*args, **kwargs):
+            captured_keys["new_key"] = kwargs.get("aes_key")
+            captured_keys["new_iv"] = kwargs.get("iv")
+            raise RuntimeError("simulated cache write failure")
+
+        with patch.object(
+            self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
+        ), patch.object(
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            side_effect=retrieve_returns_captured_key_on_post_write_check,
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.restore_to_found_state"
+        ) as mock_restore:
+            mock_restore.return_value = []
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+
+        # Assert: rotation_succeeded is True (backend DID change even though cache write failed)
+        self.assertTrue(ctx.exception.fields.get("rotation_succeeded"))
+
+    def test_abort_fallback_message_names_rotate_key(self):
+        """F3: When the abort restore path falls back to crypto re-encrypt because
+        git checkout failed, the operator-facing message must name the command that
+        failed (rotate-key, not upgrade-scheme)."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        plaintext = b"test data"
+        self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        # Cause the rotation to fail during the transform, triggering the abort path
+        def failing_encrypt_data(self_handler, data):
+            raise RuntimeError("simulated transform failure")
+
+        with patch.object(
+            AesEncryptionHandler, "encrypt_data", failing_encrypt_data
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.git_checkout_files",
+            return_value=False,
+        ), patch.object(
+            self.rotator.output, "error"
+        ) as mock_error:
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+
+            # Assert: on_error was called with a message naming rotate-key
+            mock_error.assert_called_once()
+            error_output = mock_error.call_args[0][0]
+            self.assertIn("rotate-key", error_output)
+            self.assertNotIn("upgrade-scheme", error_output)

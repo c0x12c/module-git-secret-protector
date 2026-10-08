@@ -30,6 +30,12 @@ opts out.
   transforms the files, re-reads them from disk to confirm the content is unchanged, and only then replaces the
   stored key - with the exact key material the files were encrypted with. Previously the blob was replaced
   before the re-encrypt was proven.
+- Rotation re-reads the stored key immediately before replacing it and refuses if it changed, so a concurrent
+  rotation on the same filter no longer silently loses one side's key. This narrows the race rather than closing
+  it; a conditional write is tracked separately.
+- A filter with no matched files takes the same guarded write path as any other, so a backend write that succeeds
+  while the local cache write fails is reported as a completed rotation instead of an ordinary failure.
+- The shared abort-restore message names the command that is actually running, rather than always `upgrade-scheme`.
 - The abort fallback re-encrypts in the filter's OWN scheme. It built its old-key handler without one, so the
   handler's v2 default would have written v2 bytes for a v1 filter whose key blob still declared v1 - the
   declared-scheme-vs-stored-bytes state that leaves a file permanently dirty. Decryption was unaffected, being
@@ -42,9 +48,10 @@ opts out.
   discriminated by asking the backend what it holds, so the error says whether the rotation took: re-running
   rotation is wrong once the blob is live, and the message says so. Where even that read fails the tree is left
   untouched and both recovery commands are named.
-- `rotate-key` now runs the same repo preflight as `upgrade-scheme` (detached HEAD, branch behind upstream,
-  untracked matched files). The untracked-files gate is what makes the checkout-based recovery above viable -
-  `git checkout` rejects the whole pathspec if any one element is untracked.
+- `rotate-key` now runs the same repo preflight as `upgrade-scheme`: detached HEAD, branch behind upstream,
+  untracked matched files, and uncommitted or staged content in a matched file. Those last two are what make the
+  checkout-based recovery above viable - `git checkout` rejects the whole pathspec if any element is untracked,
+  and it would discard local edits, so both are hard refusals before anything is written.
 - `pull-aes-key` actually refreshes the local key cache from the storage backend now. Previously it was a silent no-op whenever a cache file already existed - it printed success but never contacted the backend, so a stale local cache could survive indefinitely. `retrieve_key_and_iv` gained a `force` parameter that skips the cache read and always re-fetches; the default (cache-first) behaviour used by the git clean/smudge filter path is unchanged. The command's JSON envelope now reports the pulled blob's scheme and whether the cache actually changed. A corrupt or partially written cache file no longer aborts the command before the refresh - the pre-refresh read is only used to report `changed`, so an unreadable cache is treated as absent and the repair still happens.
 
 ## [1.13.0] - 2026-10-06

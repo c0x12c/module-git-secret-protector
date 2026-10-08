@@ -99,6 +99,7 @@ def restore_on_abort(
     base_dir: str = None,
     checkout=None,
     restore=None,
+    operation: str = "upgrade-scheme",
 ):
     """Restore used ONLY on ABORT - deliberately different from the
     success-path restore (restore_to_found_state), which must leave
@@ -144,7 +145,7 @@ def restore_on_abort(
     if checkout(files):
         return []
     on_error(
-        "upgrade-scheme: git checkout failed while restoring the "
+        f"{operation}: git checkout failed while restoring the "
         "working tree; falling back to decrypt/encrypt-based restore."
     )
     return restore(files, handler, found_ciphertext)
