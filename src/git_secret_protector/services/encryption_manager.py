@@ -162,7 +162,13 @@ class EncryptionManager:
             logger.info("Pulling AES key for filter: %s", filter_name)
             # force=True: pull-aes-key's whole job is to refresh a stale cache, so
             # it must always contact the backend rather than returning a cache hit.
-            before = self.key_manager.load_key_iv_from_cache(filter_name=filter_name)
+            try:
+                # Treat unreadable pre-refresh cache as absent for the changed comparison.
+                before = self.key_manager.load_key_iv_from_cache(
+                    filter_name=filter_name
+                )
+            except (OSError, ValueError):
+                before = None
             self.key_manager.retrieve_key_and_iv(filter_name=filter_name, force=True)
             after = self.key_manager.load_key_iv_from_cache(filter_name=filter_name)
             changed = before != after
