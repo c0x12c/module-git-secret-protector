@@ -23,16 +23,19 @@ class KeyRotator:
         try:
             logger.info("Starting key and IV rotation for filter: %s", filter_name)
 
-            # Step 1: Read the filter's scheme BEFORE any changes so rotation preserves it.
+            # Step 1: Retrieve the current AES key and IV with force=True to bypass stale cache.
+            # The cache can be stale (16+ months observed); decrypting with a stale key under v1
+            # silently produces garbage, and step 4 then destroys the only key that could read it.
+            current_aes_key, current_iv = self.aes_key_manager.retrieve_key_and_iv(
+                filter_name=filter_name, force=True
+            )
+
+            # Step 2: Read the filter's scheme BEFORE any changes so rotation preserves it.
+            # force=True wrote the fresh blob to cache, so get_scheme reads it now.
             # A v1 filter must stay v1 after rotation; silently upgrading would break old clients.
             scheme = self.aes_key_manager.get_scheme(filter_name)
 
-            # Step 1b: Retrieve the current AES key and IV
-            current_aes_key, current_iv = self.aes_key_manager.retrieve_key_and_iv(
-                filter_name=filter_name
-            )
-
-            # Step 2: Decrypt all files using the current AES key and IV.
+            # Step 3: Decrypt all files using the current AES key and IV.
             # Decryption is version-byte-authoritative (dispatches on the file's wire bytes),
             # so no scheme override is needed here.
             files_to_re_encrypt = self.git_attributes_parser.get_files_for_filter(
@@ -44,17 +47,17 @@ class KeyRotator:
             )
             decryption_manager.decrypt_files(files=files_to_re_encrypt)
 
-            # Step 3: Generate and store a new AES key and IV, preserving the filter's scheme.
+            # Step 4: Generate and store a new AES key and IV, preserving the filter's scheme.
             self.aes_key_manager.setup_aes_key_and_iv(
                 filter_name=filter_name, scheme=scheme
             )
 
-            # Step 4: Retrieve the new AES key and IV
+            # Step 5: Retrieve the new AES key and IV
             new_aes_key, new_iv = self.aes_key_manager.retrieve_key_and_iv(
                 filter_name=filter_name
             )
 
-            # Step 5: Encrypt all files using the new AES key and IV with the preserved scheme.
+            # Step 6: Encrypt all files using the new AES key and IV with the preserved scheme.
             encryption_manager = AesEncryptionHandler(
                 aes_key=new_aes_key,
                 iv=new_iv,

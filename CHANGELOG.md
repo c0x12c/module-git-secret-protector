@@ -19,6 +19,11 @@ opts out.
 ## [Unreleased]
 
 ### Fixed
+- `rotate-key` now reads the current key and the filter's scheme from the storage backend rather than the local
+  cache. On a clone whose cache was stale the rotation decrypted every matched file with the wrong key - silently,
+  for a v1 filter, since v1 is unauthenticated - and then replaced the backend key, leaving the committed ciphertext
+  unreadable. The key retrieve now runs first with `force=True`, which also refreshes the cache the scheme is read
+  from. Rotating a filter whose cache already matches the backend is unaffected.
 - `pull-aes-key` actually refreshes the local key cache from the storage backend now. Previously it was a silent no-op whenever a cache file already existed - it printed success but never contacted the backend, so a stale local cache could survive indefinitely. `retrieve_key_and_iv` gained a `force` parameter that skips the cache read and always re-fetches; the default (cache-first) behaviour used by the git clean/smudge filter path is unchanged. The command's JSON envelope now reports the pulled blob's scheme and whether the cache actually changed. A corrupt or partially written cache file no longer aborts the command before the refresh - the pre-refresh read is only used to report `changed`, so an unreadable cache is treated as absent and the repair still happens.
 
 ## [1.13.0] - 2026-10-06
