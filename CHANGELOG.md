@@ -16,6 +16,11 @@ must touch this file (changelog-touched.yml); `[skip changelog]` in the PR body
 opts out.
 -->
 
+## [Unreleased]
+
+### Fixed
+- `pull-aes-key` actually refreshes the local key cache from the storage backend now. Previously it was a silent no-op whenever a cache file already existed - it printed success but never contacted the backend, so a stale local cache could survive indefinitely. `retrieve_key_and_iv` gained a `force` parameter that skips the cache read and always re-fetches; the default (cache-first) behaviour used by the git clean/smudge filter path is unchanged. The command's JSON envelope now reports the pulled blob's scheme and whether the cache actually changed. A corrupt or partially written cache file no longer aborts the command before the refresh - the pre-refresh read is only used to report `changed`, so an unreadable cache is treated as absent and the repair still happens.
+
 ## [1.13.0] - 2026-10-06
 
 ### Added

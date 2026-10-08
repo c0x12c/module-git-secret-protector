@@ -160,12 +160,30 @@ class EncryptionManager:
         self._print_context(filter_name)
         try:
             logger.info("Pulling AES key for filter: %s", filter_name)
-            self.key_manager.retrieve_key_and_iv(filter_name=filter_name)
+            # force=True: pull-aes-key's whole job is to refresh a stale cache, so
+            # it must always contact the backend rather than returning a cache hit.
+            try:
+                # Treat unreadable pre-refresh cache as absent for the changed comparison.
+                before = self.key_manager.load_key_iv_from_cache(
+                    filter_name=filter_name
+                )
+            except (OSError, ValueError):
+                before = None
+            self.key_manager.retrieve_key_and_iv(filter_name=filter_name, force=True)
+            after = self.key_manager.load_key_iv_from_cache(filter_name=filter_name)
+            changed = before != after
+            scheme = self.key_manager.get_scheme(filter_name=filter_name)
             logger.info("Successfully pulled AES key for filter: %s", filter_name)
             msg = f"Successfully pulled AES key for filter: {filter_name}"
             self.output.info(msg)
             self.output.result(
-                self._envelope_ok("pull-aes-key", filter=filter_name, message=msg)
+                self._envelope_ok(
+                    "pull-aes-key",
+                    filter=filter_name,
+                    scheme=scheme,
+                    changed=changed,
+                    message=msg,
+                )
             )
         except Exception as e:
             logger.error(f"Pull AES key command failed: {e}", exc_info=True)

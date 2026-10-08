@@ -245,6 +245,58 @@ class TestEncryptionManagerService(unittest.TestCase):
         self.assertNotIn("Pull AES key command failed", stdout.getvalue())
         self.assertIn("Pull AES key command failed: boom", stderr.getvalue())
 
+    @patch("git_secret_protector.crypto.aes_key_manager.get_settings")
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def test_pull_aes_key_on_stale_cache_updates_cache_and_reports_scheme(
+        self, mock_create, mock_get_settings
+    ):
+        # Command-level case a user actually hits: a stale local cache must end
+        # up carrying the backend's version field, and the JSON envelope must
+        # report the scheme the pulled blob declares.
+        from git_secret_protector.core.output import Output
+
+        filter_name = "secret"
+        key_settings = MagicMock()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        key_settings.cache_dir = temp_dir.name
+        key_settings.module_name = "git-secret-protector"
+        key_settings.storage_type = MagicMock(value="AWS_SSM")
+        mock_get_settings.return_value = key_settings
+
+        mock_storage_manager = MagicMock()
+        mock_create.return_value = mock_storage_manager
+        mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+
+        real_key_manager = AesKeyManager()
+        stale_blob = {
+            "aes_key": base64.b64encode(secrets.token_bytes(32)).decode("utf-8"),
+            "iv": base64.b64encode(secrets.token_bytes(16)).decode("utf-8"),
+            "version": 1,
+        }
+        real_key_manager.cache_key_iv_locally(filter_name, json.dumps(stale_blob))
+
+        backend_blob = {
+            "aes_key": base64.b64encode(secrets.token_bytes(32)).decode("utf-8"),
+            "iv": base64.b64encode(secrets.token_bytes(16)).decode("utf-8"),
+            "version": 2,
+        }
+        mock_storage_manager.retrieve.return_value = json.dumps(backend_blob)
+
+        self.manager.key_manager = real_key_manager
+        self.manager.output = Output(json=True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.manager.pull_aes_key(filter_name)
+
+        cached = real_key_manager.load_key_iv_from_cache(filter_name)
+        self.assertEqual(cached["version"], 2)
+
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["scheme"], "v2")
+        self.assertTrue(payload["changed"])
+
     def test_encrypt_files_failure_prints_to_stderr_only(self):
         self.git_attributes_parser.get_files_for_filter.side_effect = RuntimeError(
             "boom"
@@ -1383,6 +1435,64 @@ class TestEncryptionManagerService(unittest.TestCase):
         # "ok" (authenticated scheme v2) - a false-positive for an unread scheme.
         # The rounding gone, an unrecognized value must never produce "ok".
         self.assertNotEqual(scheme_checks[0]["status"], "ok")
+
+    @patch("git_secret_protector.crypto.aes_key_manager.get_settings")
+    @patch("git_secret_protector.crypto.aes_key_manager.StorageManagerFactory.create")
+    def test_pull_aes_key_with_corrupt_cache_fetches_and_caches_backend(
+        self, mock_create, mock_get_settings
+    ):
+        # Corrupt cache must not prevent pull-aes-key from fetching the backend
+        # and storing a valid new cache. The corrupt cache is treated as absent
+        # for the changed comparison only; errors from backend or post-refresh
+        # reads must still surface.
+        from git_secret_protector.core.output import Output
+
+        filter_name = "secret"
+        key_settings = MagicMock()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        key_settings.cache_dir = temp_dir.name
+        key_settings.module_name = "git-secret-protector"
+        key_settings.storage_type = MagicMock(value="AWS_SSM")
+        mock_get_settings.return_value = key_settings
+
+        mock_storage_manager = MagicMock()
+        mock_create.return_value = mock_storage_manager
+        mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+
+        real_key_manager = AesKeyManager()
+        # Seed cache with truncated/corrupt JSON
+        corrupt_blob = b'{"key": "trunc'
+        real_key_manager.cache_key_iv_locally(
+            filter_name, corrupt_blob.decode("utf-8", errors="replace")
+        )
+
+        # Backend returns a valid v2 blob
+        backend_blob = {
+            "aes_key": base64.b64encode(secrets.token_bytes(32)).decode("utf-8"),
+            "iv": base64.b64encode(secrets.token_bytes(16)).decode("utf-8"),
+            "version": 2,
+        }
+        mock_storage_manager.retrieve.return_value = json.dumps(backend_blob)
+
+        self.manager.key_manager = real_key_manager
+        self.manager.output = Output(json=True)
+        out = io.StringIO()
+        # Should not raise or sys.exit despite corrupt cache
+        with contextlib.redirect_stdout(out):
+            self.manager.pull_aes_key(filter_name)
+
+        # Cache is now valid and holds the backend blob
+        cached = real_key_manager.load_key_iv_from_cache(filter_name)
+        self.assertEqual(cached["version"], 2)
+        self.assertIn("aes_key", cached)
+        self.assertIn("iv", cached)
+
+        # JSON envelope reports ok and changed
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["scheme"], "v2")
+        self.assertTrue(payload["changed"])
 
     # ----- end Task-6 tests -----
 

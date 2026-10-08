@@ -129,6 +129,63 @@ class TestAesKeyManager(unittest.TestCase):
         self.assertEqual(aes_key, base64.b64decode(data["aes_key"]))
         self.assertEqual(iv, base64.b64decode(data["iv"]))
 
+    def test_retrieve_key_and_iv_force_refreshes_stale_cache(self):
+        # Catches the reported bug: a stale cache made pull-aes-key a no-op
+        # because the backend was never contacted when a cache file existed.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+
+        stale_json = self.random_encoded_data()
+        self.aes_key_manager.cache_key_iv_locally(filter_name, stale_json)
+
+        fresh_json = self.random_encoded_data()
+        self.mock_storage_manager.retrieve.return_value = fresh_json
+
+        self.aes_key_manager.retrieve_key_and_iv(filter_name, force=True)
+
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as cache_file:
+            cached_content = cache_file.read()
+        self.assertNotEqual(cached_content, stale_json)
+        self.assertEqual(cached_content, fresh_json)
+
+    def test_retrieve_key_and_iv_without_force_never_contacts_backend_when_cached(self):
+        # Regression guard for the git clean/smudge hot path: a cache hit must
+        # never touch the storage manager unless force is explicitly requested.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        json_data = self.random_encoded_data()
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        self.aes_key_manager.retrieve_key_and_iv(filter_name)
+
+        self.assertEqual(self.mock_storage_manager.mock_calls, [])
+
+    @patch("os.path.exists", return_value=False)
+    def test_retrieve_key_and_iv_cache_only_still_skips_backend_on_miss(self, _):
+        # cache_only must keep its existing guarantee unchanged by the force addition.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+
+        with self.assertRaises(AesKeyError):
+            self.aes_key_manager.retrieve_key_and_iv(filter_name, cache_only=True)
+
+        self.mock_storage_manager.retrieve.assert_not_called()
+
+    def test_retrieve_key_and_iv_force_and_cache_only_raises_value_error(self):
+        # force + cache_only is a contradictory request from a programming error,
+        # not a case any caller should silently resolve one way or the other.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+
+        with self.assertRaises(ValueError):
+            self.aes_key_manager.retrieve_key_and_iv(
+                filter_name, cache_only=True, force=True
+            )
+
+        self.mock_storage_manager.retrieve.assert_not_called()
+
     def test_cache_key_iv_locally(self):
         json_data = self.random_encoded_data()
         filter_name = secrets.token_hex(8)
