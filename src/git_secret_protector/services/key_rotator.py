@@ -87,11 +87,35 @@ class KeyRotator:
         )
 
         converted = []
+        was_encrypted = {}
+
+        # Define the restore function for the abort paths: restore converted files
+        # to their original state (encrypted or plaintext) using the old key.
+        def restore_converted_files(files_to_restore, handler, found_ciphertext_state):
+            failures = []
+            for file in files_to_restore:
+                if file not in converted:
+                    # File was never transformed - leave it alone.
+                    continue
+                try:
+                    with open(file, "rb") as fh:
+                        data = fh.read()
+                    if data.startswith(self.magic_header):
+                        data = new_handler.decrypt_data(data)
+                    if was_encrypted[file]:
+                        data = old_handler.encrypt_data(data)
+                    with open(file, "wb") as fh:
+                        fh.write(data)
+                except Exception as err:
+                    failures.append((file, str(err)))
+            return failures
+
         try:
             for file in files:
                 with open(file, "rb") as fh:
                     data = fh.read()
-                if data.startswith(self.magic_header):
+                was_encrypted[file] = data.startswith(self.magic_header)
+                if was_encrypted[file]:
                     data = old_handler.decrypt_data(data)
                 data = new_handler.encrypt_data(data)
                 with open(file, "wb") as fh:
@@ -115,6 +139,7 @@ class KeyRotator:
         except Exception as e:
             if not isinstance(e, _RotationAbort):
                 e = _RotationAbort(f"rotation failed before the key was replaced: {e}")
+
             restore_failures = tree_state.restore_on_abort(
                 files,
                 new_handler,
@@ -122,6 +147,7 @@ class KeyRotator:
                 self.magic_header,
                 self.output.error,
                 base_dir=self.base_dir,
+                restore=restore_converted_files,
             )
             if restore_failures:
                 e.fields["restore_failed_files"] = [f for f, _ in restore_failures]
@@ -130,9 +156,70 @@ class KeyRotator:
         # The ONLY backend write, and only now that the re-encrypt is proven. After
         # this the old key is unrecoverable - pass the EXACT material the files were
         # just encrypted with, never a freshly generated one.
-        self.aes_key_manager.replace_key_and_iv(
-            filter_name=filter_name, scheme=scheme, aes_key=new_key, iv=new_iv
-        )
+        try:
+            self.aes_key_manager.replace_key_and_iv(
+                filter_name=filter_name, scheme=scheme, aes_key=new_key, iv=new_iv
+            )
+        except Exception as blob_error:
+            # Ambiguity: generate_and_store does store(...) then cache_key_iv_locally(...),
+            # so "it raised" covers both blob-not-replaced and blob-replaced-but-cache-failed.
+            # Discriminate by asking the backend what it now holds.
+            try:
+                current_key, _ = self.aes_key_manager.retrieve_key_and_iv(
+                    filter_name=filter_name, force=True
+                )
+            except Exception as retrieve_error:
+                # Backend state is unknown - do NOT guess and do NOT touch the tree.
+                raise _RotationAbort(
+                    f"rotate-key: filter '{filter_name}' could not verify whether the key "
+                    f"blob was replaced after a write failure. State is unknown. Recovery: "
+                    f"(1) `git-secret-protector pull-aes-key {filter_name}` to re-sync the "
+                    f"local cache; (2) `git checkout -- {' '.join(files[:3])}{'...' if len(files) > 3 else ''}` "
+                    f"to restore the working tree if needed. Original error: {blob_error}",
+                    rotation_succeeded=None,
+                )
+
+            # Compare the retrieved key to the new key.
+            if current_key == new_key:
+                # Blob IS live. Treat like post-write success: restore and report
+                # that the rotation IS done and re-running is WRONG.
+                restore_failures = tree_state.restore_to_found_state(
+                    files, new_handler, found_ciphertext, self.magic_header
+                )
+                failed_paths = (
+                    [f for f, _ in restore_failures] if restore_failures else []
+                )
+                raise _RotationAbort(
+                    f"rotate-key: filter '{filter_name}' rotated successfully - the "
+                    f"key blob IS rotated, and re-running rotation is wrong"
+                    + (
+                        f" - but restoring the working tree failed for {len(failed_paths)} "
+                        f"file(s): {failed_paths}"
+                        if failed_paths
+                        else ""
+                    ),
+                    rotation_succeeded=True,
+                    restore_failed_files=failed_paths,
+                )
+            else:
+                # Blob was NOT replaced. Run the pre-write abort restore.
+                restore_failures = tree_state.restore_on_abort(
+                    files,
+                    new_handler,
+                    found_ciphertext,
+                    self.magic_header,
+                    self.output.error,
+                    base_dir=self.base_dir,
+                    restore=restore_converted_files,
+                )
+                raise _RotationAbort(
+                    f"rotate-key: filter '{filter_name}' key blob was NOT replaced - "
+                    f"working tree restore in progress",
+                    rotation_succeeded=False,
+                    restore_failed_files=(
+                        [f for f, _ in restore_failures] if restore_failures else []
+                    ),
+                )
 
         # Hand the tree back in the state it was found in.
         restore_failures = tree_state.restore_to_found_state(

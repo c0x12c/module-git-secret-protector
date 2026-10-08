@@ -369,6 +369,20 @@ class TestEncryptionManagerService(unittest.TestCase):
         mock_input.assert_not_called()
         self.key_rotator.rotate_key.assert_called_once_with("secret")
 
+    @patch("builtins.input", side_effect=AssertionError("input should not be called"))
+    def test_rotate_keys_success_message_names_renormalize_and_pull(self, mock_input):
+        self.git_attributes_parser.get_files_for_filter.return_value = []
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            self.manager.rotate_keys("secret", assume_yes=True)
+
+        mock_input.assert_not_called()
+        self.key_rotator.rotate_key.assert_called_once_with("secret")
+        output = stdout.getvalue()
+        self.assertIn("--renormalize", output)
+        self.assertIn("pull-aes-key", output)
+
     def test_status_json_schema(self):
         from git_secret_protector.core.output import Output
 

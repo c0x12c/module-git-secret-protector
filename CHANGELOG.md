@@ -19,6 +19,25 @@ opts out.
 ## [Unreleased]
 
 ### Fixed
+- `rotate-key` works again. It aborted on every real backend because `setup_aes_key_and_iv` refuses an
+  already-existing parameter and rotation targets one by definition - present since the GCP Secret Manager
+  change in 2024-09. `AesKeyManager` gains `replace_key_and_iv` for that case; `setup-aes-key` keeps its
+  refusal, which is the right behaviour there and stops one filter clobbering another's key.
+- Rotation no longer reads the current key or the filter's scheme from the local cache. A stale cache fed the
+  wrong key into the decrypt, and because the magic header is not key-derived a wrong-key v1 decrypt yields
+  garbage rather than failing. Both reads are now backend-authoritative.
+- Rotation writes the key blob LAST, mirroring `upgrade-scheme`: it baselines each file's plaintext checksum,
+  transforms the files, re-reads them from disk to confirm the content is unchanged, and only then replaces the
+  stored key - with the exact key material the files were encrypted with. Previously the blob was replaced
+  before the re-encrypt was proven.
+- A failure before the key is replaced restores the working tree, `git checkout` first and a per-file inverse
+  re-encrypt as fallback, and reports any file it could not restore. A failure of the key write itself is now
+  discriminated by asking the backend what it holds, so the error says whether the rotation took: re-running
+  rotation is wrong once the blob is live, and the message says so. Where even that read fails the tree is left
+  untouched and both recovery commands are named.
+- `rotate-key` now runs the same repo preflight as `upgrade-scheme` (detached HEAD, branch behind upstream,
+  untracked matched files). The untracked-files gate is what makes the checkout-based recovery above viable -
+  `git checkout` rejects the whole pathspec if any one element is untracked.
 - `pull-aes-key` actually refreshes the local key cache from the storage backend now. Previously it was a silent no-op whenever a cache file already existed - it printed success but never contacted the backend, so a stale local cache could survive indefinitely. `retrieve_key_and_iv` gained a `force` parameter that skips the cache read and always re-fetches; the default (cache-first) behaviour used by the git clean/smudge filter path is unchanged. The command's JSON envelope now reports the pulled blob's scheme and whether the cache actually changed. A corrupt or partially written cache file no longer aborts the command before the refresh - the pre-refresh read is only used to report `changed`, so an unreadable cache is treated as absent and the repair still happens.
 
 ## [1.13.0] - 2026-10-06

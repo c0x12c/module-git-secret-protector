@@ -220,3 +220,189 @@ class TestKeyRotator(unittest.TestCase):
             mock_restore.assert_called_once()
 
         self.storage.store.assert_not_called()
+
+    def test_failed_checkout_restores_converted_files_under_the_old_key(self):
+        """When checkout fails on the abort path, converted files must be restored
+        to their original state using the old key, and files never converted must
+        remain untouched. This test pins DEFECT 1."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file1 = os.path.join(self.tmp_dir.name, "a.txt")
+        file2 = os.path.join(self.tmp_dir.name, "b.txt")
+        plaintext1 = b"content one"
+        plaintext2 = b"content two"
+        self._write_encrypted_file(file1, plaintext1, old_key, old_iv)
+        self._write_encrypted_file(file2, plaintext2, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file1, file2]
+
+        original_encrypt_data = AesEncryptionHandler.encrypt_data
+        calls = {"n": 0}
+
+        def flaky_encrypt_data(self_handler, data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated transform failure on file 2")
+            return original_encrypt_data(self_handler, data)
+
+        with patch.object(
+            AesEncryptionHandler, "encrypt_data", flaky_encrypt_data
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.git_checkout_files"
+        ) as mock_checkout:
+            mock_checkout.return_value = False
+            with self.assertRaises(Exception):
+                self.rotator.rotate_key("my-filter")
+
+        self.storage.store.assert_not_called()
+
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=MAGIC_HEADER
+        )
+        with open(file1, "rb") as f:
+            decrypted1 = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted1, plaintext1)
+
+        with open(file2, "rb") as f:
+            decrypted2 = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted2, plaintext2)
+
+    def test_blob_write_failure_with_live_blob_reports_rotation_succeeded(self):
+        """When replace_key_and_iv fails but a forced retrieve shows the blob IS
+        live with the new key, rotation_succeeded must be True."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        plaintext = b"test data"
+        self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        captured_keys = {"new_key": None, "new_iv": None}
+        retrieve_call_count = {"n": 0}
+
+        def retrieve_with_state(*args, **kwargs):
+            retrieve_call_count["n"] += 1
+            if retrieve_call_count["n"] == 1:
+                return old_key, old_iv
+            return captured_keys["new_key"], captured_keys["new_iv"]
+
+        def failing_replace(*args, **kwargs):
+            captured_keys["new_key"] = kwargs.get("aes_key")
+            captured_keys["new_iv"] = kwargs.get("iv")
+            raise RuntimeError("simulated blob write failure")
+
+        with patch.object(
+            self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
+        ), patch.object(
+            self.aes_key_manager, "retrieve_key_and_iv", side_effect=retrieve_with_state
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.restore_to_found_state"
+        ) as mock_restore:
+            mock_restore.return_value = []
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+            self.assertTrue(ctx.exception.fields.get("rotation_succeeded"))
+
+    def test_blob_write_failure_with_old_blob_runs_the_pre_write_restore(self):
+        """When replace_key_and_iv fails and the forced retrieve shows the blob
+        is still the OLD key, the pre-write restore must run and rotation_succeeded
+        must be False."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file1 = os.path.join(self.tmp_dir.name, "a.txt")
+        file2 = os.path.join(self.tmp_dir.name, "b.txt")
+        plaintext1 = b"one"
+        plaintext2 = b"two"
+        self._write_encrypted_file(file1, plaintext1, old_key, old_iv)
+        self._write_encrypted_file(file2, plaintext2, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file1, file2]
+
+        retrieve_call_count = {"n": 0}
+
+        def retrieve_returns_old_key(*args, **kwargs):
+            retrieve_call_count["n"] += 1
+            return old_key, old_iv
+
+        def failing_replace(*args, **kwargs):
+            raise RuntimeError("simulated blob write failure")
+
+        with patch.object(
+            self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
+        ), patch.object(
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            side_effect=retrieve_returns_old_key,
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.git_checkout_files",
+            return_value=False,
+        ):
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+            self.assertFalse(ctx.exception.fields.get("rotation_succeeded", True))
+
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=MAGIC_HEADER
+        )
+        with open(file1, "rb") as f:
+            decrypted1 = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted1, plaintext1)
+
+    def test_blob_write_failure_with_unreadable_backend_leaves_the_tree_alone(self):
+        """When replace_key_and_iv fails and the forced retrieve also fails,
+        the tree must NOT be restored (left as-is from the rotation loop) and
+        the error must name both recovery commands."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file_path = os.path.join(self.tmp_dir.name, "secret.txt")
+        plaintext = b"secret"
+        self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
+
+        original_data = open(file_path, "rb").read()
+
+        retrieve_call_count = {"n": 0}
+
+        captured_keys = {"new_key": None, "new_iv": None}
+
+        def retrieve_first_succeeds_then_fails(*args, **kwargs):
+            retrieve_call_count["n"] += 1
+            if retrieve_call_count["n"] == 1:
+                return old_key, old_iv
+            raise RuntimeError("backend unreachable")
+
+        def failing_replace(*args, **kwargs):
+            captured_keys["new_key"] = kwargs.get("aes_key")
+            captured_keys["new_iv"] = kwargs.get("iv")
+            raise RuntimeError("blob write error")
+
+        with patch.object(
+            self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
+        ), patch.object(
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            side_effect=retrieve_first_succeeds_then_fails,
+        ):
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+            error_msg = str(ctx.exception)
+            self.assertIn("could not verify", error_msg)
+            self.assertIn("pull-aes-key", error_msg)
+            self.assertIn("git checkout", error_msg)
+            self.assertIsNone(ctx.exception.fields.get("rotation_succeeded"))
+
+        current_data = open(file_path, "rb").read()
+        new_handler = AesEncryptionHandler(
+            aes_key=captured_keys["new_key"],
+            iv=captured_keys["new_iv"],
+            magic_header=MAGIC_HEADER,
+            scheme="v2",
+        )
+        decrypted = new_handler.decrypt_data(current_data)
+        self.assertEqual(decrypted, plaintext)

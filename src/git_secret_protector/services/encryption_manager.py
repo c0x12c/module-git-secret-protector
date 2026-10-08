@@ -854,6 +854,14 @@ class EncryptionManager:
             logger.info("Key rotation complete for filter: %s", filter_name)
             msg = f"Key rotation complete for filter: {filter_name}"
             self.output.info(msg)
+            self.output.info(
+                f"Stage re-encrypted files: git add --renormalize <paths> "
+                f"(plain 'git add' will not re-run the filter due to git's stat cache)"
+            )
+            self.output.info(
+                f"Other clones: run 'pull-aes-key {filter_name}' before the next checkout, "
+                f"since their cached key is now stale"
+            )
             self.output.result(
                 self._envelope_ok("rotate-key", filter=filter_name, message=msg)
             )
