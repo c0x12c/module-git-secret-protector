@@ -92,25 +92,35 @@ class AesKeyManager:
     :raises AesKeyError: If there is any error during the deletion process
     """
 
-    def retrieve_key_and_iv(self, filter_name, cache_only: bool = False):
+    def retrieve_key_and_iv(
+        self, filter_name, cache_only: bool = False, force: bool = False
+    ):
         logger.info("Retrieve AES key and IV for filter: %s", filter_name)
 
-        try:
-            local_data = self.load_key_iv_from_cache(filter_name=filter_name)
-            if local_data:
-                logger.debug(
-                    "Using locally cached AES key and IV for filter: %s", filter_name
-                )
-                return base64.b64decode(local_data["aes_key"]), base64.b64decode(
-                    local_data["iv"]
-                )
+        if force and cache_only:
+            raise ValueError("force and cache_only are mutually exclusive")
 
-            # Required git filters must stay cache-only so they never hang on network.
-            if cache_only:
-                raise AesKeyError(
-                    f"AES key for filter '{filter_name}' is not cached locally. "
-                    f"Run: git-secret-protector pull-aes-key {filter_name}"
-                )
+        try:
+            # Cache-first by default: this runs once per file in the git clean/smudge
+            # path, so it must not reach the network. The cost is that a changed backend
+            # blob goes unnoticed indefinitely, which force=True exists to override.
+            if not force:
+                local_data = self.load_key_iv_from_cache(filter_name=filter_name)
+                if local_data:
+                    logger.debug(
+                        "Using locally cached AES key and IV for filter: %s",
+                        filter_name,
+                    )
+                    return base64.b64decode(local_data["aes_key"]), base64.b64decode(
+                        local_data["iv"]
+                    )
+
+                # Required git filters must stay cache-only so they never hang on network.
+                if cache_only:
+                    raise AesKeyError(
+                        f"AES key for filter '{filter_name}' is not cached locally. "
+                        f"Run: git-secret-protector pull-aes-key {filter_name}"
+                    )
 
             parameter_name = self._parameter_name(filter_name=filter_name)
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
