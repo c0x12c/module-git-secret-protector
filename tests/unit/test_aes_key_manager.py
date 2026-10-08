@@ -463,6 +463,46 @@ class TestAesKeyManagerScheme(unittest.TestCase):
         self.assertIsNotNone(cached)
         self.assertEqual(cached["version"], 2)
 
+    # ------------------------------------------------------------------
+    # replace_key_and_iv tests (key rotation path)
+    # ------------------------------------------------------------------
+
+    def test_replace_key_and_iv_overwrites_an_existing_parameter(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        self.aes_key_manager.replace_key_and_iv(filter_name)
+
+        # Should not raise; should store exactly once
+        self.mock_storage_manager.store.assert_called_once()
+
+        # Cache should have the new key with version 2
+        cached = self.aes_key_manager.load_key_iv_from_cache(filter_name)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["version"], 2)
+
+    def test_replace_key_and_iv_never_consults_parameter_exists(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        self.aes_key_manager.replace_key_and_iv(filter_name)
+
+        # Should never call exists
+        self.mock_storage_manager.exists.assert_not_called()
+
+    def test_setup_aes_key_and_iv_still_refuses_an_existing_parameter(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        with self.assertRaises(AesKeyError):
+            self.aes_key_manager.setup_aes_key_and_iv(filter_name)
+
+        # Should not have called store
+        self.mock_storage_manager.store.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
