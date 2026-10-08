@@ -186,6 +186,33 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.mock_storage_manager.retrieve.assert_not_called()
 
+    @patch.object(AesKeyManager, "cache_key_iv_locally")
+    def test_peek_stored_key_and_iv_does_not_write_cache(self, mock_cache):
+        # The whole point of peek: it reads the backend but must never trigger
+        # the cache-write side effect retrieve_key_and_iv(force=True) has.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        json_data = self.random_encoded_data()
+        self.mock_storage_manager.retrieve.return_value = json_data
+
+        aes_key, iv = self.aes_key_manager.peek_stored_key_and_iv(filter_name)
+
+        data = json.loads(json_data)
+        self.assertEqual(aes_key, base64.b64decode(data["aes_key"]))
+        self.assertEqual(iv, base64.b64decode(data["iv"]))
+        mock_cache.assert_not_called()
+
+    def test_peek_stored_key_and_iv_leaves_no_cache_file_where_none_existed(self):
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        json_data = self.random_encoded_data()
+        self.mock_storage_manager.retrieve.return_value = json_data
+
+        self.aes_key_manager.peek_stored_key_and_iv(filter_name)
+
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        self.assertFalse(os.path.exists(cache_path))
+
     def test_cache_key_iv_locally(self):
         json_data = self.random_encoded_data()
         filter_name = secrets.token_hex(8)

@@ -181,6 +181,25 @@ class AesKeyManager:
                 f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}"
             )
 
+    def peek_stored_key_and_iv(self, filter_name) -> Tuple[bytes, bytes]:
+        """Read the key+IV straight from the backend without touching the local cache.
+
+        For a race check that must not have a side effect: retrieve_key_and_iv(force=True)
+        writes the cache as its defining behaviour, which would land a concurrently-rotated
+        key in this clone's cache while the working tree is being restored under the OLD
+        key - leaving the two permanently inconsistent with each other. This never writes.
+        """
+        try:
+            parameter_name = self._parameter_name(filter_name=filter_name)
+            data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
+            return base64.b64decode(data["aes_key"]), base64.b64decode(data["iv"])
+        except AesKeyError:
+            raise
+        except Exception as e:
+            raise AesKeyError(
+                f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}"
+            )
+
     """
     Clears the locally cached AES key and initialization vector (IV) associated with the given filter name.
     

@@ -31,8 +31,12 @@ opts out.
   stored key - with the exact key material the files were encrypted with. Previously the blob was replaced
   before the re-encrypt was proven.
 - Rotation re-reads the stored key immediately before replacing it and refuses if it changed, so a concurrent
-  rotation on the same filter no longer silently loses one side's key. This narrows the race rather than closing
-  it; a conditional write is tracked separately.
+  rotation on the same filter no longer silently loses one side's key. That read goes through a new
+  `peek_stored_key_and_iv`, which does NOT write the local cache: caching the other operator's key while the
+  working tree still held the previous one would leave every later clean/smudge decrypting with the wrong key,
+  silently for v1. A detected race therefore leaves the clone unchanged and self-consistent, and the message says
+  to reconcile - `git checkout` then `pull-aes-key`, in that order - rather than to retry. This narrows the race
+  rather than closing it; a conditional write is tracked separately.
 - A filter with no matched files takes the same guarded write path as any other, so a backend write that succeeds
   while the local cache write fails is reported as a completed rotation instead of an ordinary failure.
 - The shared abort-restore message names the command that is actually running, rather than always `upgrade-scheme`.

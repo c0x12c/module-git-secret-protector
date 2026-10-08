@@ -101,7 +101,9 @@ class TestKeyRotator(unittest.TestCase):
     def test_reads_current_key_from_backend_not_stale_cache(self):
         """force=True is load-bearing: retrieve_key_and_iv must be called with
         force=True so a stale local cache is never the source of the key used
-        to decrypt the existing files. The pre-write F1 check adds a second call."""
+        to decrypt the existing files. The pre-write race check uses the
+        non-caching peek_stored_key_and_iv instead, so step 1 is the only
+        retrieve_key_and_iv call."""
         backend_key = secrets.token_bytes(32)
         backend_iv = secrets.token_bytes(16)
         self._seed_backend_key(backend_key, backend_iv, version=2)
@@ -129,11 +131,7 @@ class TestKeyRotator(unittest.TestCase):
             wraps=self.aes_key_manager.retrieve_key_and_iv,
         ) as spy:
             self.rotator.rotate_key("my-filter")
-            self.assertEqual(spy.call_count, 2)
-            for call in spy.call_args_list:
-                self.assertEqual(
-                    call, unittest.mock.call(filter_name="my-filter", force=True)
-                )
+            spy.assert_called_once_with(filter_name="my-filter", force=True)
 
         self.storage.store.assert_called_once()
 
@@ -285,23 +283,26 @@ class TestKeyRotator(unittest.TestCase):
         self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
 
         captured_keys = {"new_key": None, "new_iv": None}
-        retrieve_call_count = {"n": 0}
-
-        def retrieve_with_state(*args, **kwargs):
-            retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] <= 2:
-                return old_key, old_iv
-            return captured_keys["new_key"], captured_keys["new_iv"]
 
         def failing_replace(*args, **kwargs):
             captured_keys["new_key"] = kwargs.get("aes_key")
             captured_keys["new_iv"] = kwargs.get("iv")
             raise RuntimeError("simulated blob write failure")
 
+        def retrieve_step1_then_discrimination():
+            # retrieve_key_and_iv is now called exactly twice: step 1's
+            # current-key read (old key), and the post-write discrimination
+            # after replace_key_and_iv has already failed and captured the
+            # new key - so the second value is read lazily, not pre-computed.
+            yield old_key, old_iv
+            yield captured_keys["new_key"], captured_keys["new_iv"]
+
         with patch.object(
             self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
         ), patch.object(
-            self.aes_key_manager, "retrieve_key_and_iv", side_effect=retrieve_with_state
+            self.aes_key_manager,
+            "retrieve_key_and_iv",
+            side_effect=retrieve_step1_then_discrimination(),
         ), patch(
             "git_secret_protector.services.key_rotator.tree_state.restore_to_found_state"
         ) as mock_restore:
@@ -371,15 +372,7 @@ class TestKeyRotator(unittest.TestCase):
 
         original_data = open(file_path, "rb").read()
 
-        retrieve_call_count = {"n": 0}
-
         captured_keys = {"new_key": None, "new_iv": None}
-
-        def retrieve_first_succeeds_then_fails(*args, **kwargs):
-            retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] <= 2:
-                return old_key, old_iv
-            raise RuntimeError("backend unreachable")
 
         def failing_replace(*args, **kwargs):
             captured_keys["new_key"] = kwargs.get("aes_key")
@@ -391,7 +384,15 @@ class TestKeyRotator(unittest.TestCase):
         ), patch.object(
             self.aes_key_manager,
             "retrieve_key_and_iv",
-            side_effect=retrieve_first_succeeds_then_fails,
+            # retrieve_key_and_iv is now called exactly twice: step 1's
+            # current-key read (succeeds with the old key) and the post-write
+            # discrimination (fails - backend unreachable). Both values are
+            # static, so a plain two-element side_effect list expresses this
+            # without a counter.
+            side_effect=[
+                (old_key, old_iv),
+                RuntimeError("backend unreachable"),
+            ],
         ):
             with self.assertRaises(Exception) as ctx:
                 self.rotator.rotate_key("my-filter")
@@ -548,33 +549,39 @@ class TestKeyRotator(unittest.TestCase):
         self._write_encrypted_file(file_path, plaintext, old_key, old_iv)
         self.git_attributes_parser.get_files_for_filter.return_value = [file_path]
 
-        retrieve_call_count = {"n": 0}
         different_key = secrets.token_bytes(32)
 
-        def retrieve_different_on_prewrite_check(*args, **kwargs):
-            retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] == 1:
-                return old_key, old_iv
-            return different_key, old_iv
-
+        # retrieve_key_and_iv is NOT mocked here: step 1 of rotate_key must run
+        # for real against the seeded backend so it caches old_key locally,
+        # exactly as it would outside a test - that cached state is what the
+        # assertions below check survives the race abort untouched.
         with patch.object(
             self.aes_key_manager,
             "replace_key_and_iv",
         ) as mock_replace, patch.object(
             self.aes_key_manager,
-            "retrieve_key_and_iv",
-            side_effect=retrieve_different_on_prewrite_check,
-        ):
+            "peek_stored_key_and_iv",
+            return_value=(different_key, old_iv),
+        ) as mock_peek:
             with self.assertRaises(Exception) as ctx:
                 self.rotator.rotate_key("my-filter")
+
+        # Assert: the pre-write race check used the non-caching peek, not the
+        # caching retrieve - that is the whole point of this fix.
+        mock_peek.assert_called_once()
 
         # Assert: replace_key_and_iv was never called
         mock_replace.assert_not_called()
 
-        # Assert: error message mentions the race condition
+        # Assert: error message mentions the race condition, and gives recovery
+        # advice that never says "retry" - retrying is exactly the wrong-key
+        # corruption path this abort exists to prevent.
         error_msg = str(ctx.exception)
         self.assertIn("key changed under us", error_msg)
+        self.assertNotIn("retry", error_msg)
+        self.assertIn("checkout", error_msg)
         self.assertIn("pull-aes-key", error_msg)
+        self.assertLess(error_msg.index("checkout"), error_msg.index("pull-aes-key"))
 
         # Assert: rotation_succeeded is False (blob was not touched, state is known)
         self.assertIs(ctx.exception.fields.get("rotation_succeeded"), False)
@@ -587,6 +594,12 @@ class TestKeyRotator(unittest.TestCase):
             decrypted = old_handler.decrypt_data(f.read())
         self.assertEqual(decrypted, plaintext)
 
+        # Assert: the local cache still holds the OLD key - the peek must not
+        # have written it, so cache and the restored disk stay consistent.
+        cached_data = self.aes_key_manager.load_key_iv_from_cache("my-filter")
+        self.assertEqual(base64.b64decode(cached_data["aes_key"]), old_key)
+        self.assertEqual(base64.b64decode(cached_data["iv"]), old_iv)
+
     def test_empty_file_list_blob_write_failure_is_discriminated(self):
         """F2: When a filter has no matched files, the blob write must still go
         through the guarded path so that a write failure is discriminated. If the
@@ -598,25 +611,26 @@ class TestKeyRotator(unittest.TestCase):
         self.git_attributes_parser.get_files_for_filter.return_value = []
 
         captured_keys = {"new_key": None, "new_iv": None}
-        retrieve_call_count = {"n": 0}
-
-        def retrieve_returns_captured_key_on_post_write_check(*args, **kwargs):
-            retrieve_call_count["n"] += 1
-            if retrieve_call_count["n"] <= 2:
-                return old_key, old_iv
-            return captured_keys["new_key"], captured_keys["new_iv"]
 
         def failing_replace(*args, **kwargs):
             captured_keys["new_key"] = kwargs.get("aes_key")
             captured_keys["new_iv"] = kwargs.get("iv")
             raise RuntimeError("simulated cache write failure")
 
+        def retrieve_step1_then_discrimination():
+            # Same two-call shape as the live-blob test above: step 1's
+            # current-key read, then the post-write discrimination reading
+            # the key captured_keys holds by the time replace_key_and_iv has
+            # already failed - read lazily rather than pre-computed.
+            yield old_key, old_iv
+            yield captured_keys["new_key"], captured_keys["new_iv"]
+
         with patch.object(
             self.aes_key_manager, "replace_key_and_iv", side_effect=failing_replace
         ), patch.object(
             self.aes_key_manager,
             "retrieve_key_and_iv",
-            side_effect=retrieve_returns_captured_key_on_post_write_check,
+            side_effect=retrieve_step1_then_discrimination(),
         ), patch(
             "git_secret_protector.services.key_rotator.tree_state.restore_to_found_state"
         ) as mock_restore:

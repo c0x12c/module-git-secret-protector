@@ -147,18 +147,33 @@ class KeyRotator:
             # F1: Narrow the race window - re-read the backend key immediately before
             # the write to detect concurrent rotations that landed while this one was
             # running. True compare-and-swap is a separate design task; this just makes
-            # the window smaller at minimal cost.
-            current_key, _ = self.aes_key_manager.retrieve_key_and_iv(
-                filter_name=filter_name, force=True
+            # the window smaller at minimal cost. Uses peek_stored_key_and_iv, NOT
+            # retrieve_key_and_iv(force=True): the latter's defining side effect is
+            # writing the local cache, which would land the OTHER operator's key in
+            # this clone's cache while the tree below gets restored under the key
+            # this clone started with - leaving cache and disk permanently disagreeing.
+            current_key, _ = self.aes_key_manager.peek_stored_key_and_iv(
+                filter_name=filter_name
             )
             if current_key != old_key:
-                # Pre-write race: blob was not touched, so state is known (False).
-                # Post-write backend-read failures keep None (genuinely unknown).
+                # Pre-write race: blob was not touched, nothing was read into the
+                # cache either, so state is known (False) and self-consistent.
                 raise _RotationAbort(
                     f"rotate-key: filter '{filter_name}' key changed under us "
                     f"(another rotation or setup-aes-key landed while this one was "
-                    f"running). Recovery: run `git-secret-protector pull-aes-key "
-                    f"{filter_name}` to re-sync, then retry rotation.",
+                    f"running). Nothing was written: this clone's working tree and "
+                    f"local key cache are unchanged and still consistent with each "
+                    f"other, but they no longer match the backend. Do not run "
+                    f"rotation again on this clone - doing so would decrypt these "
+                    f"files with the other operator's key and corrupt them. To "
+                    f"adopt the other operator's key, if they have already pushed: "
+                    f"run `git checkout -- <paths>` FIRST, then "
+                    f"`git-secret-protector pull-aes-key {filter_name}` - that order "
+                    f"matters, since checking out first means the files on disk are "
+                    f"already the other operator's ciphertext by the time the cache "
+                    f"catches up to their key; the reverse order recreates the "
+                    f"inconsistency. If they have not pushed yet, there is nothing "
+                    f"to check out to and this clone is blocked until they do.",
                     rotation_succeeded=False,
                 )
         except Exception as e:
