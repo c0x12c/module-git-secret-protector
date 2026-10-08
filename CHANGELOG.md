@@ -30,6 +30,9 @@ opts out.
   transforms the files, re-reads them from disk to confirm the content is unchanged, and only then replaces the
   stored key - with the exact key material the files were encrypted with. Previously the blob was replaced
   before the re-encrypt was proven.
+- A file interrupted mid-write is reported rather than silently skipped. `open(path, "wb")` truncates before the
+  write, so a write error leaves bytes no re-encryption can recover; the abort path names such a file and points at
+  `git checkout -- <path>` instead of transforming it.
 - A failure before the key is replaced restores the working tree, `git checkout` first and a per-file inverse
   re-encrypt as fallback, and reports any file it could not restore. A failure of the key write itself is now
   discriminated by asking the backend what it holds, so the error says whether the rotation took: re-running

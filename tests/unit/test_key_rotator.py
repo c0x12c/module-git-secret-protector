@@ -406,3 +406,72 @@ class TestKeyRotator(unittest.TestCase):
         )
         decrypted = new_handler.decrypt_data(current_data)
         self.assertEqual(decrypted, plaintext)
+
+    def test_file_truncated_mid_write_is_reported_not_silently_skipped(self):
+        """A file truncated mid-write during rotation must be reported as a
+        restore failure, not silently skipped by the restore path. This tests
+        the fix for the defect where open(..., "wb") truncates before the write,
+        and if fh.write fails, the file is left corrupt but converted.append
+        never runs - so restore_converted_files skips it silently."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=2)
+
+        file1 = os.path.join(self.tmp_dir.name, "a.txt")
+        file2 = os.path.join(self.tmp_dir.name, "b.txt")
+        file3 = os.path.join(self.tmp_dir.name, "c.txt")
+        plaintext1 = b"content one"
+        plaintext2 = b"content two"
+        plaintext3 = b"content three"
+        self._write_encrypted_file(file1, plaintext1, old_key, old_iv)
+        self._write_encrypted_file(file2, plaintext2, old_key, old_iv)
+        self._write_encrypted_file(file3, plaintext3, old_key, old_iv)
+        self.git_attributes_parser.get_files_for_filter.return_value = [
+            file1,
+            file2,
+            file3,
+        ]
+
+        original_open = open
+
+        def failing_open_on_second_write(path, mode="r", *args, **kwargs):
+            # file2's write-mode call will fail mid-write after truncation.
+            # The file is opened and truncated, but the write fails.
+            if path == file2 and mode == "wb":
+                fh = original_open(path, mode)
+                # At this point, file2 is truncated on disk. Close it and raise.
+                fh.close()
+                raise IOError("simulated mid-write disk failure")
+            return original_open(path, mode, *args, **kwargs)
+
+        # Verify file2 starts with content
+        with open(file2, "rb") as f:
+            before_truncation = f.read()
+        self.assertTrue(len(before_truncation) > 0)
+
+        with patch("builtins.open", side_effect=failing_open_on_second_write), patch(
+            "git_secret_protector.services.key_rotator.tree_state.git_checkout_files"
+        ) as mock_checkout:
+            mock_checkout.return_value = False
+            with self.assertRaises(Exception) as ctx:
+                self.rotator.rotate_key("my-filter")
+
+        # Assert: backend store was never called
+        self.storage.store.assert_not_called()
+
+        # Assert: the exception's restore_failed_files contains file2
+        restore_failed = ctx.exception.fields.get("restore_failed_files", [])
+        self.assertIn(file2, restore_failed)
+
+        # Assert: file1 was restored to its original plaintext (decrypts under old key)
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=MAGIC_HEADER
+        )
+        with open(file1, "rb") as f:
+            decrypted1 = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted1, plaintext1)
+
+        # Assert: file3 is untouched (never reached in the loop)
+        with open(file3, "rb") as f:
+            decrypted3 = old_handler.decrypt_data(f.read())
+        self.assertEqual(decrypted3, plaintext3)

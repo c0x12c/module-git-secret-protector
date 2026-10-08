@@ -88,12 +88,27 @@ class KeyRotator:
 
         converted = []
         was_encrypted = {}
+        in_flight = None
 
         # Define the restore function for the abort paths: restore converted files
         # to their original state (encrypted or plaintext) using the old key.
         def restore_converted_files(files_to_restore, handler, found_ciphertext_state):
             failures = []
             for file in files_to_restore:
+                # open(..., "wb") truncates before the write, so a mid-write failure
+                # leaves the file truncated or half-written. Re-encrypting truncated
+                # bytes would cement the corruption. Report it instead, routing to
+                # restore_failed_files so the operator is told to recover via checkout.
+                if file == in_flight:
+                    failures.append(
+                        (
+                            file,
+                            "file was interrupted mid-write and is unrecoverable by "
+                            "re-encryption - bytes are not recoverable. Recovery: "
+                            f"run `git checkout -- {file}` to restore from the committed blob",
+                        )
+                    )
+                    continue
                 if file not in converted:
                     # File was never transformed - leave it alone.
                     continue
@@ -118,9 +133,11 @@ class KeyRotator:
                 if was_encrypted[file]:
                     data = old_handler.decrypt_data(data)
                 data = new_handler.encrypt_data(data)
+                in_flight = file
                 with open(file, "wb") as fh:
                     fh.write(data)
                 converted.append(file)
+                in_flight = None
 
             # Verify: re-read from disk and compare decrypted content against the
             # baseline. Scoped honestly - both sides are the same scheme in one
