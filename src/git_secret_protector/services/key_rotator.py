@@ -67,8 +67,10 @@ class KeyRotator:
             )
             return
 
+        # Handler scheme defaults to v2, but decryption is version-byte-authoritative
+        # so this was only caught by the abort fallback re-encrypting with the wrong scheme.
         old_handler = AesEncryptionHandler(
-            aes_key=old_key, iv=old_iv, magic_header=self.magic_header
+            aes_key=old_key, iv=old_iv, magic_header=self.magic_header, scheme=scheme
         )
 
         # Record, before touching anything, whether the tree was found at rest as

@@ -30,6 +30,10 @@ opts out.
   transforms the files, re-reads them from disk to confirm the content is unchanged, and only then replaces the
   stored key - with the exact key material the files were encrypted with. Previously the blob was replaced
   before the re-encrypt was proven.
+- The abort fallback re-encrypts in the filter's OWN scheme. It built its old-key handler without one, so the
+  handler's v2 default would have written v2 bytes for a v1 filter whose key blob still declared v1 - the
+  declared-scheme-vs-stored-bytes state that leaves a file permanently dirty. Decryption was unaffected, being
+  version-byte-authoritative.
 - A file interrupted mid-write is reported rather than silently skipped. `open(path, "wb")` truncates before the
   write, so a write error leaves bytes no re-encryption can recover; the abort path names such a file and points at
   `git checkout -- <path>` instead of transforming it.

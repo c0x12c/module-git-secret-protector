@@ -475,3 +475,58 @@ class TestKeyRotator(unittest.TestCase):
         with open(file3, "rb") as f:
             decrypted3 = old_handler.decrypt_data(f.read())
         self.assertEqual(decrypted3, plaintext3)
+
+    def test_failed_checkout_fallback_restores_v1_files_in_v1(self):
+        """A v1 filter whose abort restore path re-encrypts must emit v1 bytes,
+        not v2. Without the fix (old_handler built without scheme=scheme), the
+        fallback would write v2 bytes while the blob declares v1, leaving the
+        file permanently dirty."""
+        old_key = secrets.token_bytes(32)
+        old_iv = secrets.token_bytes(16)
+        self._seed_backend_key(old_key, old_iv, version=1)
+
+        file1 = os.path.join(self.tmp_dir.name, "a.txt")
+        file2 = os.path.join(self.tmp_dir.name, "b.txt")
+        plaintext1 = b"content one"
+        plaintext2 = b"content two"
+        self._write_encrypted_file(file1, plaintext1, old_key, old_iv, scheme="v1")
+        self._write_encrypted_file(file2, plaintext2, old_key, old_iv, scheme="v1")
+        self.git_attributes_parser.get_files_for_filter.return_value = [file1, file2]
+
+        original_encrypt_data = AesEncryptionHandler.encrypt_data
+        calls = {"n": 0}
+
+        def flaky_encrypt_data(self_handler, data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated transform failure on file 2")
+            return original_encrypt_data(self_handler, data)
+
+        with patch.object(
+            AesEncryptionHandler, "encrypt_data", flaky_encrypt_data
+        ), patch(
+            "git_secret_protector.services.key_rotator.tree_state.git_checkout_files"
+        ) as mock_checkout:
+            mock_checkout.return_value = False
+            with self.assertRaises(Exception):
+                self.rotator.rotate_key("my-filter")
+
+        self.storage.store.assert_not_called()
+
+        with open(file1, "rb") as f:
+            restored_bytes = f.read()
+
+        old_handler = AesEncryptionHandler(
+            aes_key=old_key, iv=old_iv, magic_header=MAGIC_HEADER, scheme="v1"
+        )
+
+        byte_after_magic = restored_bytes[len(MAGIC_HEADER) : len(MAGIC_HEADER) + 1]
+        self.assertIn(
+            byte_after_magic[0],
+            AesEncryptionHandler._B64_FIRST_BYTES,
+            f"Restored file must be v1 (base64 alphabet first byte), not v2 "
+            f"(0x02 version byte). Got byte: {byte_after_magic.hex()}",
+        )
+
+        decrypted1 = old_handler.decrypt_data(restored_bytes)
+        self.assertEqual(decrypted1, plaintext1)
