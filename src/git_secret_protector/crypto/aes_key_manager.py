@@ -32,25 +32,35 @@ class AesKeyManager:
             )
         return self.storage_manager
 
-    """
-    Sets up an AES key and initialization vector (IV) for encryption, and stores them securely.
+    def _generate_and_store(
+        self,
+        filter_name: str,
+        scheme: str,
+        require_absent: bool,
+        aes_key: bytes = None,
+        iv: bytes = None,
+    ):
+        """Generate (or accept) an AES key+IV, store to backend+cache. For both setup and replace paths.
 
-    This method generates a new AES key and IV, checks whether a parameter with the corresponding name already 
-    exists in the storage, and if not, stores the key and IV both in the storage manager and locally in the cache 
-    directory. If a parameter with the same name already exists, an error is raised.
+        When require_absent=True, checks _parameter_exists and raises if found (setup path).
+        When require_absent=False, skips the check entirely (replace path for rotation).
+        Note: _parameter_exists returns False on ANY exception, so routing replace through it
+        would add a fail-open branch with no benefit.
 
-    :param filter_name: The filter name used to generate and store the AES key and IV
-    :type filter_name: str
-    :raises AesKeyError: If there is any error during the setup process
-    """
-
-    def setup_aes_key_and_iv(self, filter_name: str, scheme: str = "v2"):
+        When BOTH aes_key and iv are supplied, those exact bytes are stored instead of
+        generating fresh ones - the caller (key rotation) has already re-encrypted the
+        working tree under this material, so the backend must end up holding the key
+        that actually matches the files on disk. When either is absent, fresh random
+        bytes are generated as before.
+        """
         try:
-            logger.info("Set up AES key and IV for filter: %s", filter_name)
+            logger.info(
+                "Generating and storing AES key and IV for filter: %s", filter_name
+            )
 
             parameter_name = self._parameter_name(filter_name=filter_name)
 
-            if self._parameter_exists(parameter_name=parameter_name):
+            if require_absent and self._parameter_exists(parameter_name=parameter_name):
                 logger.error(
                     f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter."
                 )
@@ -58,8 +68,9 @@ class AesKeyManager:
                     f"Parameter with name {parameter_name} already exists."
                 )
 
-            aes_key = os.urandom(self.AES_KEY_SIZE)
-            iv = os.urandom(self.IV_SIZE)
+            if aes_key is None or iv is None:
+                aes_key = os.urandom(self.AES_KEY_SIZE)
+                iv = os.urandom(self.IV_SIZE)
 
             data = {
                 "aes_key": base64.b64encode(s=aes_key).decode(encoding="utf-8"),
@@ -70,14 +81,50 @@ class AesKeyManager:
 
             self._get_storage_manager().store(parameter_name, json_data)
 
-            logger.info(
-                f"AES key and IV setup and stored in storage for filter: {filter_name}"
-            )
+            logger.info(f"AES key and IV stored in storage for filter: {filter_name}")
             self.cache_key_iv_locally(filter_name, json_data)
         except Exception as e:
             raise AesKeyError(
                 f"Failed to setup AES key and IV for filter '{filter_name}': {str(e)}"
             )
+
+    """
+    Sets up an AES key and initialization vector (IV) for encryption, and stores them securely.
+
+    This method generates a new AES key and IV, checks whether a parameter with the corresponding name already
+    exists in the storage, and if not, stores the key and IV both in the storage manager and locally in the cache
+    directory. If a parameter with the same name already exists, an error is raised.
+
+    :param filter_name: The filter name used to generate and store the AES key and IV
+    :type filter_name: str
+    :raises AesKeyError: If there is any error during the setup process
+    """
+
+    def setup_aes_key_and_iv(self, filter_name: str, scheme: str = "v2"):
+        self._generate_and_store(filter_name, scheme, require_absent=True)
+
+    def replace_key_and_iv(
+        self,
+        filter_name: str,
+        scheme: str = "v2",
+        aes_key: bytes = None,
+        iv: bytes = None,
+    ):
+        """Replace an existing AES key+IV. Used by key rotation.
+
+        Unlike setup_aes_key_and_iv, this does NOT consult _parameter_exists: the replace
+        path targets an existing parameter by definition, and skipping the check eliminates
+        a fail-open branch where _parameter_exists returns False on any exception.
+
+        When aes_key and iv are both given, those exact bytes are stored - the rotator
+        has already re-encrypted every matched file under this material before calling
+        here, so the backend must be given the SAME key, not a fresh one it never used.
+        Omitting them falls back to generating fresh random bytes (unused by rotation,
+        kept for any other caller that wants the old generate-fresh behaviour).
+        """
+        self._generate_and_store(
+            filter_name, scheme, require_absent=False, aes_key=aes_key, iv=iv
+        )
 
     """
     Destroys the AES key and initialization vector (IV) associated with the given filter name.
@@ -126,6 +173,25 @@ class AesKeyManager:
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             self.cache_key_iv_locally(filter_name, json.dumps(data))
 
+            return base64.b64decode(data["aes_key"]), base64.b64decode(data["iv"])
+        except AesKeyError:
+            raise
+        except Exception as e:
+            raise AesKeyError(
+                f"Failed to retrieve AES key and IV for filter '{filter_name}': {str(e)}"
+            )
+
+    def peek_stored_key_and_iv(self, filter_name) -> Tuple[bytes, bytes]:
+        """Read the key+IV straight from the backend without touching the local cache.
+
+        For a race check that must not have a side effect: retrieve_key_and_iv(force=True)
+        writes the cache as its defining behaviour, which would land a concurrently-rotated
+        key in this clone's cache while the working tree is being restored under the OLD
+        key - leaving the two permanently inconsistent with each other. This never writes.
+        """
+        try:
+            parameter_name = self._parameter_name(filter_name=filter_name)
+            data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             return base64.b64decode(data["aes_key"]), base64.b64decode(data["iv"])
         except AesKeyError:
             raise

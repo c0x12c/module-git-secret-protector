@@ -186,6 +186,33 @@ class TestAesKeyManager(unittest.TestCase):
 
         self.mock_storage_manager.retrieve.assert_not_called()
 
+    @patch.object(AesKeyManager, "cache_key_iv_locally")
+    def test_peek_stored_key_and_iv_does_not_write_cache(self, mock_cache):
+        # The whole point of peek: it reads the backend but must never trigger
+        # the cache-write side effect retrieve_key_and_iv(force=True) has.
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        json_data = self.random_encoded_data()
+        self.mock_storage_manager.retrieve.return_value = json_data
+
+        aes_key, iv = self.aes_key_manager.peek_stored_key_and_iv(filter_name)
+
+        data = json.loads(json_data)
+        self.assertEqual(aes_key, base64.b64decode(data["aes_key"]))
+        self.assertEqual(iv, base64.b64decode(data["iv"]))
+        mock_cache.assert_not_called()
+
+    def test_peek_stored_key_and_iv_leaves_no_cache_file_where_none_existed(self):
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.storage_manager = self.mock_storage_manager
+        json_data = self.random_encoded_data()
+        self.mock_storage_manager.retrieve.return_value = json_data
+
+        self.aes_key_manager.peek_stored_key_and_iv(filter_name)
+
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        self.assertFalse(os.path.exists(cache_path))
+
     def test_cache_key_iv_locally(self):
         json_data = self.random_encoded_data()
         filter_name = secrets.token_hex(8)
@@ -462,6 +489,66 @@ class TestAesKeyManagerScheme(unittest.TestCase):
         cached = self.aes_key_manager.load_key_iv_from_cache(filter_name)
         self.assertIsNotNone(cached)
         self.assertEqual(cached["version"], 2)
+
+    # ------------------------------------------------------------------
+    # replace_key_and_iv tests (key rotation path)
+    # ------------------------------------------------------------------
+
+    def test_replace_key_and_iv_overwrites_an_existing_parameter(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        self.aes_key_manager.replace_key_and_iv(filter_name)
+
+        # Should not raise; should store exactly once
+        self.mock_storage_manager.store.assert_called_once()
+
+        # Cache should have the new key with version 2
+        cached = self.aes_key_manager.load_key_iv_from_cache(filter_name)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["version"], 2)
+
+    def test_replace_key_and_iv_never_consults_parameter_exists(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        self.aes_key_manager.replace_key_and_iv(filter_name)
+
+        # Should never call exists
+        self.mock_storage_manager.exists.assert_not_called()
+
+    def test_setup_aes_key_and_iv_still_refuses_an_existing_parameter(self):
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        with self.assertRaises(AesKeyError):
+            self.aes_key_manager.setup_aes_key_and_iv(filter_name)
+
+        # Should not have called store
+        self.mock_storage_manager.store.assert_not_called()
+
+    def test_replace_key_and_iv_stores_the_given_key_material(self):
+        """Rotation re-encrypts files under this exact material before calling
+        here - the backend must be given the SAME bytes, never a fresh pair it
+        never used."""
+        filter_name = secrets.token_hex(8)
+        self.mock_storage_manager.parameter_name.return_value = f"/enc/{filter_name}"
+        self.mock_storage_manager.exists.return_value = True
+
+        given_key = secrets.token_bytes(32)
+        given_iv = secrets.token_bytes(16)
+
+        self.aes_key_manager.replace_key_and_iv(
+            filter_name, aes_key=given_key, iv=given_iv
+        )
+
+        stored_name, stored_json = self.mock_storage_manager.store.call_args[0]
+        stored_data = json.loads(stored_json)
+        self.assertEqual(base64.b64decode(stored_data["aes_key"]), given_key)
+        self.assertEqual(base64.b64decode(stored_data["iv"]), given_iv)
 
 
 if __name__ == "__main__":

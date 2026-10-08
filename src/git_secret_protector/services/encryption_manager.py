@@ -1,5 +1,4 @@
 import configparser
-import hashlib
 import logging
 import os
 import subprocess
@@ -13,6 +12,7 @@ from git_secret_protector.core.git_attributes_parser import GitAttributesParser
 from git_secret_protector.core.git_preflight import check_repo_preflight
 from git_secret_protector.core.output import Output, safe_print
 from git_secret_protector.core.settings import StorageType, get_settings
+from git_secret_protector.core import tree_state
 from git_secret_protector.crypto.aes_encryption_handler import (
     AesEncryptionHandler,
     SUPPORTED_SCHEMES,
@@ -800,10 +800,38 @@ class EncryptionManager:
         filter_name = self._require_filter(filter_name)
         self._print_context(filter_name)
         try:
+            files = self.git_attributes_parser.get_files_for_filter(filter_name)
+
+            if files:
+                filter_map = {f: filter_name for f in files}
+                plaintext_of = self.__plaintext_of_resolver(filter_map)
+                notes = []
+                refusals = check_repo_preflight(
+                    files, cwd=self.base_dir, plaintext_of=plaintext_of, notes=notes
+                )
+                for note in notes:
+                    self.output.info(f"rotate-key: {note}")
+                if refusals:
+                    for refusal in refusals:
+                        self.output.error(f"rotate-key: refusing - {refusal}")
+                    self.output.result(
+                        self._envelope_err(
+                            "rotate-key",
+                            "preflight refused",
+                            filter=filter_name,
+                            refusals=refusals,
+                            notes=notes,
+                        )
+                    )
+                    sys.exit(1)
+
             if not assume_yes:
                 try:
                     answer = input(
-                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL matched files and retires the current key. [y/N] "
+                        f"Rotate key for filter '{filter_name}'? This re-encrypts ALL "
+                        f"matched files. The current key becomes UNRECOVERABLE once "
+                        f"rotation writes the new one - any clone holding the old "
+                        f"cache must run pull-aes-key afterward. [y/N] "
                     )
                 except EOFError:
                     # No TTY (CI / piped stdin) and no explicit consent - treat as
@@ -822,21 +850,43 @@ class EncryptionManager:
                         )
                     )
                     return
-            rotator = KeyRotator(self.key_manager, self.git_attributes_parser)
-            rotator.rotate_key(filter_name)
+            self.key_rotator.rotate_key(filter_name)
             logger.info("Key rotation complete for filter: %s", filter_name)
             msg = f"Key rotation complete for filter: {filter_name}"
             self.output.info(msg)
+            self.output.info(
+                f"Stage re-encrypted files: git add --renormalize <paths> "
+                f"(plain 'git add' will not re-run the filter due to git's stat cache)"
+            )
+            self.output.info(
+                f"Other clones: run 'pull-aes-key {filter_name}' before the next checkout, "
+                f"since their cached key is now stale"
+            )
             self.output.result(
                 self._envelope_ok("rotate-key", filter=filter_name, message=msg)
             )
         except Exception as e:
             logger.error(f"Rotate keys command failed: {e}", exc_info=True)
             self.output.error(f"Rotate keys command failed: {e}")
+            fields = dict(getattr(e, "fields", {}) or {})
+            if fields.get("rotation_succeeded"):
+                # The blob IS already rotated - this is a human follow-up on the
+                # WORKING TREE, not a failed rotation. Re-running would rotate again.
+                self.output.error(
+                    f"rotate-key: filter '{filter_name}' rotation succeeded - do "
+                    f"NOT re-run it - but restoring the working tree failed."
+                )
             self.output.result(
-                self._envelope_err("rotate-key", str(e), filter=filter_name)
+                self._envelope_err(
+                    "rotate-key",
+                    str(getattr(e, "error", e)),
+                    filter=filter_name,
+                    **fields,
+                )
             )
-            sys.exit(1)
+            sys.exit(
+                _RESTORE_INCOMPLETE_EXIT_CODE if fields.get("rotation_succeeded") else 1
+            )
 
     def clean_filter(self, filter_name: str):
         filter_name = self._require_filter(filter_name)
@@ -1453,116 +1503,27 @@ class EncryptionManager:
         return plaintext_of
 
     def __plaintext_checksums(self, files, handler):
-        """sha256 of each file's decrypted plaintext; never logs a byte.
-
-        A file at rest as ciphertext (magic-header guarded) is decrypted in
-        memory only - the file on disk is never touched here. A file at rest
-        as plaintext is hashed as-is. Safe to call before or after this run
-        has re-encrypted the files, since both states are self-describing via
-        the magic header.
-        """
-        hashes = {}
-        for file in files:
-            with open(file, "rb") as fh:
-                data = fh.read()
-            if data.startswith(self.magic_header):
-                data = handler.decrypt_data(data)
-            hashes[file] = hashlib.sha256(data).hexdigest()
-        return hashes
+        return tree_state.plaintext_checksums(files, handler, self.magic_header)
 
     def __restore_to_found_state(self, files, handler, found_ciphertext):
-        """Best-effort: hand the tree back in the state it was found in.
-
-        Called on BOTH the success and failure paths, since the files are
-        already re-encrypted by the time any later check can fail (PR #127's
-        lesson: a failed migration must never leave ciphertext where a
-        found-as-plaintext repo expects plaintext).
-
-        Each file is judged by its CURRENT state on disk, never by assuming the
-        re-encrypt loop ran to completion. That loop decrypts and then
-        re-encrypts each file in turn, so a failure BETWEEN those two writes -
-        a full disk, an I/O error - leaves that one file as PLAINTEXT. An
-        earlier version returned early for a found-as-ciphertext tree, on the
-        reasoning that such a tree is already where it started; that is only
-        true of a completed loop, and the cost of the gap was plaintext secrets
-        sitting in a repo that stores ciphertext, reported as a clean abort and
-        committable.
-
-        Returns a list of (file, error) for any file that could not be
-        restored - those need a human. Never raises.
-        """
-        failures = []
-        for file in files:
-            try:
-                is_encrypted = self.__is_encrypted(file)
-                if found_ciphertext and not is_encrypted:
-                    handler.encrypt_file(file)
-                elif not found_ciphertext and is_encrypted:
-                    handler.decrypt_file(file)
-            except Exception as e:
-                failures.append((file, str(e)))
-        return failures
+        return tree_state.restore_to_found_state(
+            files, handler, found_ciphertext, self.magic_header
+        )
 
     def __git_checkout_files(self, files):
-        """`git checkout -- <files>`, never raising. Returns True on success.
-
-        Relies on every matched file being tracked - the untracked-file
-        preflight gate exists precisely so this is always viable on the
-        abort path, and pays for nothing if it is never used.
-        """
-        if not files:
-            return True
-        try:
-            result = subprocess.run(
-                ["git", "checkout", "--", *files],
-                cwd=self.base_dir,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return result.returncode == 0
+        return tree_state.git_checkout_files(files, self.base_dir)
 
     def __restore_on_abort(self, files, handler, found_ciphertext):
-        """Restore used ONLY on ABORT - deliberately different from the
-        success-path restore (__restore_to_found_state), which must leave
-        freshly re-encrypted v2 content in place because that IS the
-        intended change. On abort there is no intended change: the files
-        must come back exactly as committed.
-
-        `git checkout -- <files>` returns the exact committed bytes and, on
-        its own, lands the correct at-rest state in both shapes - where
-        filters are configured the smudge filter decrypts on checkout; where
-        they are not, the raw committed ciphertext comes back untouched. A
-        crypto-based re-encrypt of a found-as-ciphertext tree cannot do
-        this: it produces FRESH v2 bytes with no committed blob behind them,
-        diverging from a v1-declared blob - the declared-scheme-vs-stored-
-        bytes bug CLAUDE.md records for the 1.9.0 regression, now showing up
-        on the abort path instead.
-
-        A SUCCESSFUL checkout is trusted, and deliberately NOT second-guessed
-        against the found at-rest state. An earlier version compared the two
-        and fell back to the crypto restore on a mismatch, which reintroduced
-        the very bug this method exists to fix: on a checkout with filters
-        configured whose files nonetheless sat as ciphertext at rest (someone
-        ran encrypt-files by hand), checkout correctly smudges them back to
-        plaintext, the comparison reads that as a mismatch, and the fallback
-        re-encrypts to fresh v2 bytes under a v1 blob. Measured, not reasoned
-        about. Whatever checkout produces IS the canonical state for that
-        checkout's configuration; a found state disagreeing with it was itself
-        the anomaly.
-
-        The crypto restore remains the fallback for the one case that needs
-        it: checkout itself failing.
-        """
-        if self.__git_checkout_files(files):
-            return []
-        self.output.error(
-            "upgrade-scheme: git checkout failed while restoring the "
-            "working tree; falling back to decrypt/encrypt-based restore."
+        return tree_state.restore_on_abort(
+            files,
+            handler,
+            found_ciphertext,
+            self.magic_header,
+            self.output.error,
+            self.base_dir,
+            checkout=self.__git_checkout_files,
+            restore=self.__restore_to_found_state,
         )
-        return self.__restore_to_found_state(files, handler, found_ciphertext)
 
     def __abort_upgrade(
         self, filter_name, files, handler, found_ciphertext, error, **fields
@@ -1589,13 +1550,7 @@ class EncryptionManager:
         sys.exit(1)
 
     def __is_encrypted(self, file_path: str):
-        try:
-            with open(file_path, "rb") as file:
-                header = file.read(len(self.magic_header))
-                return header == self.magic_header
-        except IOError:
-            logger.error(f"Error reading file: {file_path}")
-            return False
+        return tree_state.is_encrypted(file_path, self.magic_header)
 
     def __read_head_bytes(self, file_path: str):
         """Return file_path's committed bytes at HEAD, or None if it isn't there.
