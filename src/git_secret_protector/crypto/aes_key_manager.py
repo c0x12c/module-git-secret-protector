@@ -60,6 +60,13 @@ class AesKeyManager:
 
             parameter_name = self._parameter_name(filter_name=filter_name)
 
+            # This is a best-effort preflight check, not an atomic guarantee. It catches the
+            # ordinary case (parameter already exists from an earlier run) but not a concurrent
+            # racer - _parameter_exists and store are separate calls, and store uses Overwrite=True.
+            # Two setup processes can both observe absence and both store, with the later one
+            # silently replacing the first. Tightening this to a real atomicity guarantee would
+            # need the backend conditional write that SSM does not offer. Note: _parameter_exists
+            # returns False on any exception, so this preflight is fail-open.
             if require_absent and self._parameter_exists(parameter_name=parameter_name):
                 logger.error(
                     f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter."
@@ -299,6 +306,10 @@ class AesKeyManager:
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             data["version"] = 1 if scheme == "v1" else 2
             json_data = json.dumps(data)
+            # Retrieve and store have no intervening work (unlike rotation, which re-encrypts every
+            # matched file between its read and write), so the stale-blob window here is much shorter.
+            # A re-read before store would shift that window rather than close it, and would imply a
+            # protection that does not exist. The proper fix needs SSM's unsupported conditional write.
             self._get_storage_manager().store(parameter_name, json_data)
             self.cache_key_iv_locally(filter_name, json_data)
         except Exception as e:
