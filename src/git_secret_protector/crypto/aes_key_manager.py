@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 from typing import Tuple
 
 from git_secret_protector.core.settings import get_settings
@@ -61,6 +62,13 @@ class AesKeyManager:
             parameter_name = self._parameter_name(filter_name=filter_name)
 
             if require_absent and self._parameter_exists(parameter_name=parameter_name):
+                # This is a best-effort preflight check, not an atomic guarantee. It catches the
+                # ordinary case (parameter already exists from an earlier run) but not a concurrent
+                # racer - _parameter_exists and store are separate calls, and store uses Overwrite=True.
+                # Two setup processes can both observe absence and both store, with the later one
+                # silently replacing the first. Tightening this to a real atomicity guarantee would
+                # need the backend conditional write that SSM does not offer. Note: _parameter_exists
+                # returns False on any exception, so this preflight is fail-open.
                 logger.error(
                     f"Parameter with name {parameter_name} already exists. Use a different filter name or manually delete the existing parameter."
                 )
@@ -152,7 +160,16 @@ class AesKeyManager:
             # path, so it must not reach the network. The cost is that a changed backend
             # blob goes unnoticed indefinitely, which force=True exists to override.
             if not force:
-                local_data = self.load_key_iv_from_cache(filter_name=filter_name)
+                # Wrap the cache read to provide a better error message on corruption.
+                # Message belongs here, not in load_key_iv_from_cache - that method's raising
+                # contract lets pull-aes-key treat corrupt cache as absent.
+                try:
+                    local_data = self.load_key_iv_from_cache(filter_name=filter_name)
+                except (OSError, ValueError) as e:
+                    raise AesKeyError(
+                        f"Local key cache for filter '{filter_name}' at {self._cache_path(filter_name=filter_name)} "
+                        f"is unreadable: {e}. Run: git-secret-protector pull-aes-key {filter_name}"
+                    )
                 if local_data:
                     logger.debug(
                         "Using locally cached AES key and IV for filter: %s",
@@ -226,19 +243,45 @@ class AesKeyManager:
 
     def cache_key_iv_locally(self, filter_name: str, json_data: str):
         cache_path = self._cache_path(filter_name=filter_name)
+        temp_path = None
 
-        cache_fd = os.open(
-            cache_path,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o600,
-        )
-        # Lock mode to 0600 on the fd before writing - O_CREAT ignores the mode
-        # for a pre-existing file, so without this the secret would briefly land
-        # under the old (e.g. 0644) permissions.
-        os.fchmod(cache_fd, 0o600)
-        with os.fdopen(cache_fd, "w") as cache_file:
-            cache_file.write(json_data)
-        logger.debug("Cached AES key and IV locally for filter: %s", filter_name)
+        try:
+            # Write to a temp file first, then atomically replace the target.
+            # os.replace is atomic within a filesystem, so the temp file must sit
+            # in the same directory as the target. mkstemp creates a unique temp file
+            # with O_EXCL semantics, avoiding collisions between concurrent writers.
+            fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(cache_path), suffix=".tmp"
+            )
+            try:
+                # Lock mode to 0600 on the fd before writing. mkstemp creates with 0600,
+                # but this explicit call documents the requirement: the mode of the temp
+                # file is what the target inherits through os.replace.
+                os.fchmod(fd, 0o600)
+                cache_file = os.fdopen(fd, "w")
+            except BaseException:
+                # Still own the raw descriptor here - fdopen never took it. Never close
+                # it again after fdopen succeeds, or a later write failure gets masked
+                # by a second-close EBADF.
+                os.close(fd)
+                raise
+            with cache_file:
+                cache_file.write(json_data)
+            os.replace(temp_path, cache_path)
+            logger.debug("Cached AES key and IV locally for filter: %s", filter_name)
+        except BaseException:
+            # Clean up only the temp file this call created. With a unique name per
+            # call, this can no longer touch another writer's temp file, making this
+            # cleanup safe under concurrent writes. BaseException catches Ctrl-C
+            # (KeyboardInterrupt) as well as Exception-derived errors, so temp files
+            # are removed regardless of the failure type.
+            if temp_path is not None:
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except Exception:
+                    pass
+            raise
 
     def load_key_iv_from_cache(self, filter_name: str):
         cache_path = self._cache_path(filter_name=filter_name)
@@ -295,6 +338,10 @@ class AesKeyManager:
         """Rewrite the version field in the stored blob (backend + cache) without touching aes_key/iv."""
         try:
             parameter_name = self._parameter_name(filter_name=filter_name)
+            # Retrieve and store have no intervening work (unlike rotation, which re-encrypts every
+            # matched file between its read and write), so the stale-blob window here is much shorter.
+            # A re-read before store would shift that window rather than close it, and would imply a
+            # protection that does not exist. The proper fix needs SSM's unsupported conditional write.
             # Backend is authoritative - always reload from there
             data = json.loads(self._get_storage_manager().retrieve(name=parameter_name))
             data["version"] = 1 if scheme == "v1" else 2

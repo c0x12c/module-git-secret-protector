@@ -19,6 +19,17 @@ opts out.
 ## [Unreleased]
 
 ### Fixed
+- The local key cache is written atomically. It was written with `O_TRUNC` followed by a write, so an
+  interruption - Ctrl-C, a full disk, an OOM kill - left a truncated JSON cache, and every write path reached
+  that code. The clean/smudge filter then aborted the whole git command on such a cache. The write now goes to a
+  temp file beside the target and `os.replace`s onto it. A handled failure (exception caught and cleanup run)
+  removes its temp file; a hard kill (SIGKILL or OOM) may leave one behind. Either way, the previous cache stays
+  intact and readable, and a stale temp file does not block the next write or cause cache corruption - which is
+  what actually matters. The 0600 mode is still forced on the descriptor before writing, because `O_CREAT`
+  ignores the mode for a file that already exists.
+- An unreadable local key cache now reports the cache path and `pull-aes-key <filter>` instead of a bare JSON
+  parse error, on the path the git filters use. `pull-aes-key` itself still treats an unreadable cache as absent
+  and repairs it, which is why the message lives at the point of use rather than in the cache reader.
 - `rotate-key` works again. It aborted on every real backend because `setup_aes_key_and_iv` refuses an
   already-existing parameter and rotation targets one by definition - present since the GCP Secret Manager
   change in 2024-09. `AesKeyManager` gains `replace_key_and_iv` for that case; `setup-aes-key` keeps its

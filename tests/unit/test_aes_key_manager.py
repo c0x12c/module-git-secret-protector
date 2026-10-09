@@ -1,4 +1,5 @@
 import base64
+import errno
 import json
 import os
 import secrets
@@ -270,6 +271,263 @@ class TestAesKeyManager(unittest.TestCase):
         self.assertIsNone(
             result, "Expected result to be None when cache file does not exist"
         )
+
+    def test_failed_replace_leaves_previous_cache_intact(self):
+        # Seed a valid cache, then fail the atomic replace.
+        # The original content must still be there and still parseable.
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # Verify the cache was written
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as f:
+            original_content = f.read()
+        self.assertEqual(original_content, json_data)
+
+        # Fail during os.replace (after the temp file is successfully written).
+        # This simulates an interruption after the write completes but before atomicity.
+        new_json = self.random_encoded_data()
+        with patch("os.replace", side_effect=OSError("Simulated failure")):
+            with self.assertRaises(OSError):
+                self.aes_key_manager.cache_key_iv_locally(filter_name, new_json)
+
+        # The original content should still be there and parseable
+        with open(cache_path, "r") as f:
+            recovered_content = f.read()
+        self.assertEqual(recovered_content, json_data)
+        json.loads(recovered_content)  # Verify it parses
+
+    def test_failed_write_leaves_previous_cache_intact(self):
+        # Seed a valid cache, then fail the write/fdopen itself (earlier failure point).
+        # The original content must still be there and parseable, and no temp file remains.
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # Verify the cache was written
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as f:
+            original_content = f.read()
+        self.assertEqual(original_content, json_data)
+
+        # Fail during fdopen (before write happens).
+        new_json = self.random_encoded_data()
+        with patch("os.fdopen", side_effect=OSError("Simulated write failure")):
+            with self.assertRaises(OSError):
+                self.aes_key_manager.cache_key_iv_locally(filter_name, new_json)
+
+        # The original content should still be there and parseable
+        with open(cache_path, "r") as f:
+            recovered_content = f.read()
+        self.assertEqual(recovered_content, json_data)
+        json.loads(recovered_content)  # Verify it parses
+
+        # No temp file should remain after cleanup
+        cache_dir = self.aes_key_manager.cache_dir
+        tmp_files = [f for f in os.listdir(cache_dir) if f.endswith(".tmp")]
+        self.assertEqual(
+            len(tmp_files),
+            0,
+            f"Found unexpected .tmp files after write failure: {tmp_files}",
+        )
+
+    def test_failed_write_inside_the_file_object_leaves_previous_cache_intact(self):
+        # Fail the write itself (fdopen succeeds, the write call raises ENOSPC).
+        # This pins the bug where a double os.close masked the real error as EBADF.
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as f:
+            original_content = f.read()
+        self.assertEqual(original_content, json_data)
+
+        real_fdopen = os.fdopen
+
+        def fdopen_with_failing_write(fd, *args, **kwargs):
+            cache_file = real_fdopen(fd, *args, **kwargs)
+            cache_file.write = MagicMock(
+                side_effect=OSError(errno.ENOSPC, "No space left on device")
+            )
+            return cache_file
+
+        new_json = self.random_encoded_data()
+        with patch("os.fdopen", side_effect=fdopen_with_failing_write):
+            with self.assertRaises(OSError) as ctx:
+                self.aes_key_manager.cache_key_iv_locally(filter_name, new_json)
+
+        self.assertEqual(ctx.exception.errno, errno.ENOSPC)
+
+        with open(cache_path, "r") as f:
+            recovered_content = f.read()
+        self.assertEqual(recovered_content, json_data)
+        json.loads(recovered_content)  # Verify it parses
+
+        cache_dir = self.aes_key_manager.cache_dir
+        tmp_files = [f for f in os.listdir(cache_dir) if f.endswith(".tmp")]
+        self.assertEqual(
+            len(tmp_files),
+            0,
+            f"Found unexpected .tmp files after write failure: {tmp_files}",
+        )
+
+    def test_no_tmp_file_remains_after_successful_write(self):
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        cache_dir = self.aes_key_manager.cache_dir
+        tmp_files = [f for f in os.listdir(cache_dir) if f.endswith(".tmp")]
+        self.assertEqual(len(tmp_files), 0, f"Found unexpected .tmp files: {tmp_files}")
+
+    def test_no_tmp_file_remains_after_failed_write(self):
+        filter_name = secrets.token_hex(8)
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        json_data = self.random_encoded_data()
+
+        # Pre-populate the cache
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # Fail the write by patching os.replace
+        with patch("os.replace", side_effect=OSError("Simulated failure")):
+            with self.assertRaises(OSError):
+                self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # No .tmp file should remain
+        cache_dir = self.aes_key_manager.cache_dir
+        tmp_files = [f for f in os.listdir(cache_dir) if f.endswith(".tmp")]
+        self.assertEqual(
+            len(tmp_files), 0, f"Found unexpected .tmp files after failure: {tmp_files}"
+        )
+
+    def test_cache_mode_0600_after_rewrite_over_0644_file(self):
+        json_data = self.random_encoded_data()
+        filter_name = secrets.token_hex(8)
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+
+        # Create a pre-existing file with looser permissions
+        existing_fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(existing_fd, "w") as cache_file:
+            cache_file.write("stale-data")
+        os.chmod(cache_path, 0o644)
+        self.assertEqual(oct(os.stat(cache_path).st_mode & 0o777), "0o644")
+
+        # Rewrite the cache
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # The file should now have mode 0o600
+        self.assertEqual(oct(os.stat(cache_path).st_mode & 0o777), "0o600")
+
+    def test_corrupt_cache_cache_only_raises_with_path_and_recovery(self):
+        # Test that a corrupt cache file raises AesKeyError naming the path and recovery command.
+        filter_name = secrets.token_hex(8)
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+
+        # Write a corrupt cache file (not valid JSON)
+        with open(cache_path, "w") as f:
+            f.write("not valid json{")
+        os.chmod(cache_path, 0o600)
+
+        # Call retrieve_key_and_iv(cache_only=True) to test the error message.
+        # The better message lives in retrieve_key_and_iv's cache read path, not
+        # in load_key_iv_from_cache, because load_key_iv_from_cache's contract
+        # (raising on corruption) is what lets pull-aes-key treat a corrupt cache as absent.
+        with self.assertRaises(AesKeyError) as context:
+            self.aes_key_manager.retrieve_key_and_iv(filter_name, cache_only=True)
+
+        error_msg = str(context.exception)
+        self.assertIn(cache_path, error_msg)
+        self.assertIn("pull-aes-key", error_msg)
+        self.assertIn(filter_name, error_msg)
+
+    def test_absent_cache_still_returns_none(self):
+        # Regression guard: load_key_iv_from_cache must keep returning None
+        # when no cache file exists, which is load-bearing for every cache-first caller.
+        filter_name = secrets.token_hex(8)
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+
+        # Ensure no cache file exists
+        self.assertFalse(os.path.exists(cache_path))
+
+        result = self.aes_key_manager.load_key_iv_from_cache(filter_name)
+
+        self.assertIsNone(result)
+
+    def test_concurrent_writers_do_not_destroy_each_others_temp_file(self):
+        # Concurrent writers with unique temp names cannot destroy each other.
+        # Simulate by patching os.replace to run a nested cache write before proceeding.
+        filter_name = secrets.token_hex(8)
+        json_data_1 = self.random_encoded_data()
+        json_data_2 = self.random_encoded_data()
+
+        call_count = [0]
+
+        original_replace = os.replace
+
+        def patched_replace(src, dst):
+            call_count[0] += 1
+            # On the first call to os.replace, simulate a second writer
+            # by running a complete nested cache_key_iv_locally with different data.
+            if call_count[0] == 1:
+                self.aes_key_manager.cache_key_iv_locally(filter_name, json_data_2)
+            # Then proceed with the original replace
+            return original_replace(src, dst)
+
+        with patch("os.replace", side_effect=patched_replace):
+            # First write is in progress; during its os.replace, the second write happens.
+            self.aes_key_manager.cache_key_iv_locally(filter_name, json_data_1)
+
+        # Both writes completed without raising.
+        # The final cache content is either data_1 or data_2 (last-writer-wins is acceptable).
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as f:
+            final_content = f.read()
+        final_data = json.loads(final_content)
+        # Verify it's one of the two expected payloads
+        payload_1 = json.loads(json_data_1)
+        payload_2 = json.loads(json_data_2)
+        self.assertTrue(
+            final_data == payload_1 or final_data == payload_2,
+            "Final cache content is neither expected payload",
+        )
+
+        # No .tmp file should remain
+        cache_dir = self.aes_key_manager.cache_dir
+        tmp_files = [f for f in os.listdir(cache_dir) if f.endswith(".tmp")]
+        self.assertEqual(len(tmp_files), 0, f"Found unexpected .tmp files: {tmp_files}")
+
+    def test_stale_tmp_file_does_not_block_a_write(self):
+        # A stale .tmp file left by a crashed process doesn't prevent a new write.
+        filter_name = secrets.token_hex(8)
+        json_data = self.random_encoded_data()
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        cache_dir = os.path.dirname(cache_path)
+
+        # Drop a stale .tmp file by hand
+        stale_tmp_path = os.path.join(cache_dir, "stale_leftover.tmp")
+        with open(stale_tmp_path, "w") as f:
+            f.write("stale data from a crash")
+
+        # Verify the stale file exists
+        self.assertTrue(os.path.exists(stale_tmp_path))
+
+        # Now write fresh data - this should succeed despite the stale .tmp
+        self.aes_key_manager.cache_key_iv_locally(filter_name, json_data)
+
+        # Verify the write succeeded
+        cache_path = self.aes_key_manager._cache_path(filter_name=filter_name)
+        with open(cache_path, "r") as f:
+            cached_content = f.read()
+        cached_data = json.loads(cached_content)
+        expected_data = json.loads(json_data)
+        self.assertEqual(cached_data, expected_data)
+
+        # The stale .tmp is not this call's responsibility, but it exists and
+        # doesn't interfere. Just verify it's still there (no cleanup expected).
+        self.assertTrue(os.path.exists(stale_tmp_path))
 
 
 class TestAesKeyManagerScheme(unittest.TestCase):
