@@ -6,6 +6,10 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'poetry.lock'
+      # pyproject.toml carries [tool.pytest.ini_options], so a change to how pytest
+      # resolves or collects tests was never run by pytest - the same self-gating hole
+      # the workflow entry below exists to close.
+      - 'pyproject.toml'
       # This file gates itself. Without it, a change to the matrix below is never
       # run by the matrix it edits - measured on PR #120, where widening the Python
       # range triggered only the changelog check and no tests at all.

@@ -19,6 +19,11 @@ opts out.
 ## [Unreleased]
 
 ### Fixed
+
+- `pytest` now resolves the package from the checkout it is run in. A git worktree that
+  shares the main checkout's virtualenv imported the main checkout's `src`, so a run inside
+  a worktree measured the wrong tree. The pytest workflow now also runs on a `pyproject.toml`
+  change, so a change to the pytest configuration is exercised by the suite it configures.
 - The local key cache is written atomically. It was written with `O_TRUNC` followed by a write, so an
   interruption - Ctrl-C, a full disk, an OOM kill - left a truncated JSON cache, and every write path reached
   that code. The clean/smudge filter then aborted the whole git command on such a cache. The write now goes to a
