@@ -27,6 +27,10 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
+# rootdir-relative, so a git worktree imports ITS OWN src. The shared .venv's
+# git_secret_protector.pth is an absolute path to the main checkout, and the venv
+# is one file behind a symlink, so it cannot be fixed per-worktree.
+pythonpath = ["src"]
 testpaths = [
     "tests",
 ]
